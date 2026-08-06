@@ -36,8 +36,12 @@ async def _link_doctor_to_user(test_session, doctor_id: int, username: str) -> N
 
 
 async def test_submit_referral_requires_referral_create_permission(
-    test_client: AsyncClient, auth_headers, test_patient_data, test_doctor_data
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
 ):
+    """care_coordinator can create the patient/doctor fixtures (needs
+    patient:manage/doctor:manage) but deliberately lacks referral:create —
+    submitting the referral itself must still be refused."""
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
     patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
     doctor = (await test_client.post("/doctors/", json=test_doctor_data, headers=auth_headers)).json()
 

@@ -4,15 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.api.dependencies.auth import get_current_active_user
 from app.api.dependencies.database import get_async_session
 from app.auth.jwt_handler import create_access_token
 from app.auth.refresh_tokens import hash_token, is_expired, issue_refresh_token, rotate_refresh_token
 from app.core.rate_limit import limiter
 from app.core.security import get_password_hash, verify_password
 from app.models.refresh_token import RefreshToken
+from app.models.role import Role
 from app.models.user import User
-from app.schemas.auth import RefreshRequest, Token, UserCreate, UserResponse
+from app.schemas.auth import MeResponse, RefreshRequest, Token, UserCreate, UserResponse
 from app.services.audit import log_action
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -94,6 +97,22 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_async_ses
     await log_action(db, actor_id=user.id, action="auth.refresh", resource_type="user", resource_id=user.id)
     await db.commit()
     return {"access_token": access_token, "refresh_token": new_raw, "token_type": "bearer"}
+
+
+@router.get("/me", response_model=MeResponse)
+async def me(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.roles).selectinload(Role.permissions))
+        .where(User.id == current_user.id)
+    )
+    user = result.scalar_one()
+    roles = sorted(r.name for r in user.roles)
+    permissions = sorted({p.name for role in user.roles for p in role.permissions})
+    return MeResponse(id=user.id, username=user.username, email=user.email, roles=roles, permissions=permissions)
 
 
 @router.post("/logout")

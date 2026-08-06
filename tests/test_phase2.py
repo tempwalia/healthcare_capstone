@@ -4,6 +4,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.role import Permission, Role
 from app.models.user import User
+from tests.test_referral import _grant_role
 
 
 async def _grant_admin(test_session, username: str) -> None:
@@ -78,8 +79,8 @@ async def test_audit_log_requires_permission(test_client: AsyncClient, auth_head
 async def test_audit_log_visible_to_admin_and_records_actions(
     test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data
 ):
-    await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)
     await _grant_admin(test_session, test_user_data["username"])
+    await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)
 
     response = await test_client.get("/audit/", headers=auth_headers)
     assert response.status_code == 200
@@ -90,8 +91,10 @@ async def test_audit_log_visible_to_admin_and_records_actions(
 
 
 async def test_list_endpoints_return_pagination_envelope(
-    test_client: AsyncClient, auth_headers, test_patient_data
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data
 ):
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+
     await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)
     response = await test_client.get("/patients/", headers=auth_headers)
     body = response.json()
@@ -100,8 +103,10 @@ async def test_list_endpoints_return_pagination_envelope(
 
 
 async def test_soft_deleted_patient_excluded_from_list(
-    test_client: AsyncClient, auth_headers, test_patient_data
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data
 ):
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+
     created = (
         await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)
     ).json()

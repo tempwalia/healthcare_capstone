@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies.auth import get_current_active_user
+from app.api.dependencies.auth import get_current_active_user, require_permission
 from app.api.dependencies.database import get_async_session
 from app.api.dependencies.pagination import build_page
 from app.models.patient import Patient
@@ -12,15 +12,28 @@ from app.models.user import User
 from app.schemas.common import Page
 from app.schemas.patient import PatientCreate, PatientResponse, PatientUpdate
 from app.services.audit import log_action
+from app.services.record_scope import patient_visibility_filter
 
 router = APIRouter(prefix="/patients", tags=["patients"])
+
+
+async def _get_scoped_patient(db: AsyncSession, current_user: User, patient_id: int) -> Patient:
+    scope = await patient_visibility_filter(db, current_user)
+    query = select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+    if scope is not None:
+        query = query.where(scope)
+
+    patient = (await db.execute(query)).scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Patient not found")
+    return patient
 
 
 @router.post("/", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
 async def create_patient(
     data: PatientCreate,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("patient:manage")),
 ):
     patient = Patient(**data.model_dump())
     db.add(patient)
@@ -39,7 +52,10 @@ async def get_patients(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_active_user),
 ):
+    scope = await patient_visibility_filter(db, current_user)
     base_query = select(Patient).where(Patient.deleted_at.is_(None))
+    if scope is not None:
+        base_query = base_query.where(scope)
     total = (await db.execute(select(func.count()).select_from(base_query.subquery()))).scalar_one()
     result = await db.execute(base_query.offset(skip).limit(limit))
     return build_page(request, result.scalars().all(), total, skip, limit)
@@ -51,13 +67,7 @@ async def get_patient(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_active_user),
 ):
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
-    )
-    patient = result.scalar_one_or_none()
-    if not patient:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Patient not found")
-    return patient
+    return await _get_scoped_patient(db, current_user, patient_id)
 
 
 @router.put("/{patient_id}", response_model=PatientResponse)
@@ -65,7 +75,7 @@ async def update_patient(
     patient_id: int,
     data: PatientUpdate,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("patient:manage")),
 ):
     result = await db.execute(
         select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
@@ -87,7 +97,7 @@ async def update_patient(
 async def delete_patient(
     patient_id: int,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("patient:manage")),
 ):
     result = await db.execute(
         select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))

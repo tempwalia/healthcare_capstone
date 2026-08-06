@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi_mcp import FastApiMCP
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -9,6 +10,8 @@ from slowapi.errors import RateLimitExceeded
 from app.agents import graph as agent_graph
 from app.agents.checkpointer import open_checkpointer
 from app.api.routes import (
+    admin,
+    analytics,
     appointments,
     audit,
     auth,
@@ -27,6 +30,7 @@ from app.core.rate_limit import limiter
 from app.events.publisher import publish_loop
 from app.middlewares.correlation import CorrelationIdMiddleware
 from app.middlewares.cors import add_cors_middleware
+from app.middlewares.no_cache_dashboard import NoCacheDashboardMiddleware
 from mock_systems.ehr_mock.main import app as ehr_mock_app
 from mock_systems.notification_mock.main import app as notification_mock_app
 from mock_systems.payer_mock.main import app as payer_mock_app
@@ -61,6 +65,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 add_cors_middleware(app)
 app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(NoCacheDashboardMiddleware)
 
 app.include_router(auth.router)
 app.include_router(patients.router)
@@ -71,6 +76,8 @@ app.include_router(audit.router)
 app.include_router(health.router)
 app.include_router(referral.router)
 app.include_router(schedule.router)
+app.include_router(analytics.router)
+app.include_router(admin.router)
 app.include_router(ai_referral_workflow.router)
 app.include_router(ai_assistant.router)
 
@@ -89,6 +96,13 @@ app.mount("/mock/payer", payer_mock_app)
 app.mount("/mock/directory", provider_directory_mock_app)
 app.mount("/mock/scheduling", scheduling_mock_app)
 app.mount("/mock/notification", notification_mock_app)
+
+# The interactive role-based dashboard (plain HTML/CSS/vanilla JS, no build
+# step) — served same-origin so it can call the API above with no CORS
+# config needed. Mounted at /app, not /, so it can never shadow an API route
+# or /docs; client-side hash routing (#/patients, #/referrals/12) means no
+# server-side catch-all is required for deep links.
+app.mount("/app", StaticFiles(directory="static", html=True), name="dashboard")
 
 
 # Mounted last so operation_ids from every router above are finalized before

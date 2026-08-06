@@ -899,6 +899,44 @@ returns 429 on the 6th; every list endpoint returns the `Page` envelope; deletin
 row in the DB with `deleted_at` set and it disappears from `GET /patients`; `/health/ready` returns 503
 when Postgres is stopped; every register/login/CRUD action produces one `AuditLog` row.
 
+**Implementation notes (retroactive fix, added after Phase 9)**: `require_permission()` above was built
+in this phase, but it was only ever wired onto `referral.py` — `patients.py`, `doctors.py`,
+`appointments.py`, `medical_records.py` shipped with **zero ownership scoping**, discovered while
+building Phase 9's MCP tool allowlist (see that phase's notes) and fixed as dedicated follow-up work
+once Phase 9 was done:
+- New `app/services/record_scope.py`, same shape as `referral_scope.py`'s
+  `referral_visibility_filter`: `patient_visibility_filter`, `appointment_visibility_filter`,
+  `medical_record_visibility_filter`, each returning a SQLAlchemy filter (or `None` for "no
+  restriction") to AND onto a list/get-by-id query. New permissions: `patient:view_own`/`view_all`/
+  `manage`, `appointment:view_own`/`view_all`/`manage`, `medical_record:view_own`/`view_all`/`manage`,
+  `doctor:manage`.
+- **Deliberate asymmetry**: `patient:view_all` is granted broadly to every clinical/coordination role
+  (pcp, specialist, care_coordinator) — this app has no patient-panel/assignment model, so any provider
+  may legitimately need to pull up any patient's chart (new intake, walk-in, cross-coverage), the same
+  trade-off `referral_scope.py` already makes for `care_coordinator`'s `referral:view_all`. Appointment
+  and medical-record visibility stay need-to-know even for pcp/specialist (`view_own`, scoped to
+  encounters they're actually party to as the assigned doctor) — clinical notes are more sensitive than
+  basic patient demographics, so `view_all` there is care_coordinator-only (for oversight, without also
+  granting `medical_record:manage` — coordinators don't author clinical notes).
+- `doctor.py` GET routes deliberately stay open to any authenticated user — the doctor directory (name,
+  specialization, department, bio) isn't PHI and is meant to be browsable the same way
+  `GET /doctors/search` already is; only mutations are gated, behind `doctor:manage`.
+- Mutation endpoints (`POST`/`PUT`/`DELETE`) across all four routers are gated by a `*:manage`
+  permission via the existing `require_permission()` dependency — before this fix, any authenticated
+  user, including the bare `patient` role, could create/edit/delete an arbitrary patient, doctor,
+  appointment, or medical record by ID, not just read one.
+- Not implemented (separate, deferred hardening): the `*:manage` grant is staff-wide, not per-record —
+  e.g. a `pcp` can edit any patient, not only ones they've treated — and a medical record's `doctor_id`
+  in the request body isn't checked against the caller's own linked `Doctor` row. Closing those would
+  need per-record ownership checks on write, not just read-side scoping; out of scope for this pass.
+- Regression coverage: `tests/test_record_scope.py` (new) — a `patient`-role user can read/list only
+  their own linked record and gets a 404 (not a 403 leak) on someone else's, and a 403 on any write; a
+  `pcp`/`specialist` sees only appointments/medical records they're the assigned doctor on;
+  `care_coordinator` sees everything. Verified again against real Postgres (a bare freshly-registered
+  user gets 403 on `POST /patients/` and `GET /patients/{id}`; a `patient`-role user scoped to one
+  linked record gets 200 on their own id, 404 on another patient's id, and 403 attempting to `PUT` their
+  own record since `patient` holds `view_own`, not `manage`).
+
 ---
 
 ### Phase 3 — Mocked External Systems as MCP Servers (P0)
@@ -1526,6 +1564,69 @@ underlying route enforces it regardless of who's calling it.
 data; asking about someone else's referral ID is refused (403 surfaces through the tool call, not a
 silent leak); works with `LLM_PROVIDER=stub` (FAQ fallback) and with a real key (tool-using agent).
 
+**Implementation notes (deviations from the sketch above, plus scope the user explicitly asked to go
+beyond)**:
+- **Built role-specific, not one shared assistant**, per explicit user request: `app/agents/assistant_graph.py`
+  defines `ROLE_TOOL_ALLOWLIST` and `ROLE_SYSTEM_PROMPTS` keyed by role name (`patient`, `pcp`,
+  `specialist`, `care_coordinator`); `resolve_role_for_tools()` picks the most-privileged role a user
+  holds (`care_coordinator > specialist > pcp > patient`), defaulting to `patient` (most restrictive)
+  for anyone with no recognized role. This is a curation layer *on top of* route-level RBAC, not a
+  replacement for it.
+- **Major pre-existing security finding, made while building the tool allowlist**: `patients.py`,
+  `doctors.py`, `appointments.py`, `medical_records.py` routes have **zero ownership scoping** — any
+  authenticated user can fetch any patient/doctor/appointment/medical-record by ID today. Only
+  `referral.py`'s `_get_scoped_referral`/`referral_visibility_filter` (a Phase 2 fix) is actually
+  scoped; it was never extended to the rest of the CRUD. Handing an LLM a tool like `get_patient(id)`
+  would have silently defeated the entire "role-specific, no cross-patient leakage" goal, so
+  `BASE_REFERRAL_TOOLS` deliberately exposes **only** `get_referral`/`list_referrals`/
+  `list_referral_documents`/`list_specialist_notes` (+`get_workflow_state`/`list_slots`/
+  `list_availability` for `care_coordinator` only, none of which expose patient PHI directly) — not
+  `get_patient`/`get_appointment`/`list_appointments`/`get_medical_record`/`get_doctor`, even though
+  they exist as MCP tools too. **Fixed as dedicated follow-up work after this phase — see the
+  "Implementation notes" appended to Phase 2 for the design.** The MCP tool allowlist above is
+  deliberately left as-is even after that fix: least-privilege for LLM tool calls is a separate
+  concern from route-level scoping (a scoped `get_patient(id)` tool would still let the agent enumerate
+  every patient a `care_coordinator`-role caller can see), so `test_assistant.py`'s
+  `test_patient_tool_allowlist_excludes_unscoped_routes` still passes and still holds, just for a
+  narrower reason now (least-privilege, not "the route would leak").
+- **The assistant graph is built fresh per chat request**, not once at startup like the referral
+  workflow graph (`app/agents/graph.py`): the `MultiServerMCPClient` must carry *the calling user's own
+  bearer token* (`headers={"Authorization": f"Bearer {token}"}` on the `platform` server config), not a
+  shared system identity, so every tool call runs through the platform's real auth as that actual user.
+  Confirmed `fastapi_mcp`'s default `headers=["authorization"]` config (unchanged in `app/main.py`)
+  already forwards it from the incoming MCP request through to the underlying FastAPI route — no
+  server-side config change needed, only building the client this way.
+- `create_react_agent`'s `state_modifier=` parameter from the guide's sketch above is gone in the
+  installed `langgraph` version (verified via `inspect.signature`) — it's `prompt=` now.
+- Explicit `operation_id=` was added to the handful of GET routes actually exposed as tools (e.g.
+  `get_referral`, `list_referrals`) since FastAPI's auto-generated ones (e.g.
+  `get_referral_referral_requests__referral_id__get`) are technically fine (they still satisfy a
+  `get_/list_` prefix filter) but poor for LLM tool-selection quality.
+- **New feature beyond the guide, requested by the user**: after a referral is scheduled, care
+  coordination staff can record what actually happened at the consult — symptoms, diagnosis,
+  prescription, follow-up notes — via `POST /referral/requests/{id}/outcome` (new `ReferralOutcome`
+  model, new `referral:record_outcome` permission granted to `care_coordinator` **only**, not
+  `specialist`: the AI-recommended specialist's `doctor_id` comes from the mock provider directory's
+  synthetic ID space with no real platform user, same root cause as the `specialist_id`/`schedule_slots`
+  gaps documented in Phases 6/8, so a coordinator relaying the consult report is the realistic actor).
+  Recording it moves the referral to `completed` and kicks off
+  `app/services/referral_outcome.py::generate_completion_summary` (background task, reuses Phase 7's
+  `gather_patient_history`) — a whole-care-journey summary for the next follow-up, stored in
+  `outcome.interaction_summary`. Visible via `GET /requests/{id}/outcome` to `referral:view_all`
+  holders and the referring doctor only — deliberately **not** the patient (`_get_staff_scoped_referral`
+  explicitly excludes the patient-visibility branch the referral itself normally has).
+- Real end-to-end smoke test (real Postgres, real Groq) confirmed the critical property: a patient's
+  chat asking about *someone else's* referral ID was correctly refused through the real tool call
+  ("I don't have a referral with ID 1 in your record") — not a silent leak, not a fabricated answer.
+- **Testing gotcha, not an app bug**: firing two document uploads back-to-back with zero delay against
+  a *real* running uvicorn server (not pytest's `ASGITransport`) can race — unlike `ASGITransport`
+  (confirmed in Phase 6), a `BackgroundTask` is not guaranteed to finish before the HTTP response
+  returns over a real socket. Two overlapping `run_referral_workflow` background tasks against the same
+  LangGraph `thread_id` produced a referral stuck at `awaiting_documents` with no further progress. Not
+  chased to full root cause given time constraints (possible checkpointer-lock contention under genuine
+  concurrent `ainvoke` calls on one thread) — the practical fix was spacing out the manual smoke test's
+  uploads by a few seconds. Pytest is unaffected (`ASGITransport` throughout).
+
 ---
 
 ### Phase 10 — Stretch AI Opportunities (P1)
@@ -1578,6 +1679,26 @@ step if data volume grows, out of scope here).
 
 **Definition of done**: after running a few referrals through the pipeline, the summary endpoint
 reflects real counts/timings, not placeholder zeros.
+
+**Implementation notes**: no separate analytics store, as sketched — all five metrics are plain
+aggregation queries over `referral_requests` (+ `referral_documents` for one of them) in
+`app/api/routes/analytics.py`.
+- `top_specialties_requested` has no backing `specialty` column on `referral_requests`, so it reapplies
+  `specialist_node`'s existing diagnosis-code/keyword heuristic (`infer_specialty`, Phase 6) per
+  referral at query time, using whatever diagnosis codes its documents extracted (Phase 7) plus its
+  `reason` text — not a new heuristic, the same one already driving specialist matching.
+- `avg_time_to_schedule_hours` is a documented approximation: `updated_at` isn't a per-status-transition
+  timestamp, so only referrals *currently* sitting in `scheduled` are averaged (their most recent update
+  is the scheduling transition); ones that have since moved to `completed` are excluded rather than
+  counted with a misleading duration. A dedicated status-transition log would fix this properly —
+  out of scope here.
+- `delay_risk_referrals` reuses Phase 10's sketch heuristic (`days_elapsed / target_wait_days > 0.8`)
+  directly at query time rather than depending on Phase 10's scheduled sweep actually being built (it
+  wasn't — P1 stretch, not done) or a stored risk score.
+- Verified against real Postgres with referrals genuinely spread across `submitted` /
+  `awaiting_documents` / `awaiting_specialist_approval` / `eligibility_denied` / `scheduled` /
+  `completed`: the summary reflected true counts, a non-zero denial rate, and non-empty specialty
+  counts; a user without `analytics:view` got 403.
 
 ---
 

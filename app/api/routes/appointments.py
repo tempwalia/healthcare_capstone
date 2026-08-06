@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.dependencies.auth import get_current_active_user
+from app.api.dependencies.auth import get_current_active_user, require_permission
 from app.api.dependencies.database import get_async_session
 from app.api.dependencies.pagination import build_page
 from app.models.appointment import Appointment
@@ -15,15 +15,32 @@ from app.models.user import User
 from app.schemas.appointment import AppointmentCreate, AppointmentResponse, AppointmentUpdate
 from app.schemas.common import Page
 from app.services.audit import log_action
+from app.services.record_scope import appointment_visibility_filter
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
+
+
+async def _get_scoped_appointment(db: AsyncSession, current_user: User, appointment_id: int) -> Appointment:
+    scope = await appointment_visibility_filter(db, current_user)
+    query = (
+        select(Appointment)
+        .options(selectinload(Appointment.patient), selectinload(Appointment.doctor))
+        .where(Appointment.id == appointment_id, Appointment.deleted_at.is_(None))
+    )
+    if scope is not None:
+        query = query.where(scope)
+
+    appointment = (await db.execute(query)).scalar_one_or_none()
+    if not appointment:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Appointment not found")
+    return appointment
 
 
 @router.post("/", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED)
 async def create_appointment(
     data: AppointmentCreate,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("appointment:manage")),
 ):
     patient_ok = (await db.execute(
         select(Patient).where(Patient.id == data.patient_id, Patient.deleted_at.is_(None))
@@ -54,7 +71,10 @@ async def get_appointments(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_active_user),
 ):
+    scope = await appointment_visibility_filter(db, current_user)
     base_query = select(Appointment).where(Appointment.deleted_at.is_(None))
+    if scope is not None:
+        base_query = base_query.where(scope)
     total = (await db.execute(select(func.count()).select_from(base_query.subquery()))).scalar_one()
     result = await db.execute(
         base_query.options(selectinload(Appointment.patient), selectinload(Appointment.doctor))
@@ -70,15 +90,7 @@ async def get_appointment(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_active_user),
 ):
-    result = await db.execute(
-        select(Appointment)
-        .options(selectinload(Appointment.patient), selectinload(Appointment.doctor))
-        .where(Appointment.id == appointment_id, Appointment.deleted_at.is_(None))
-    )
-    appointment = result.scalar_one_or_none()
-    if not appointment:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Appointment not found")
-    return appointment
+    return await _get_scoped_appointment(db, current_user, appointment_id)
 
 
 @router.put("/{appointment_id}", response_model=AppointmentResponse)
@@ -86,7 +98,7 @@ async def update_appointment(
     appointment_id: int,
     data: AppointmentUpdate,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("appointment:manage")),
 ):
     result = await db.execute(
         select(Appointment).where(Appointment.id == appointment_id, Appointment.deleted_at.is_(None))
@@ -108,7 +120,7 @@ async def update_appointment(
 async def delete_appointment(
     appointment_id: int,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("appointment:manage")),
 ):
     result = await db.execute(
         select(Appointment).where(Appointment.id == appointment_id, Appointment.deleted_at.is_(None))

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies.auth import get_current_active_user
+from app.api.dependencies.auth import get_current_active_user, require_permission
 from app.api.dependencies.database import get_async_session
 from app.api.dependencies.pagination import build_page
 from app.models.doctor import Doctor
@@ -15,12 +15,19 @@ from app.services.audit import log_action
 
 router = APIRouter(prefix="/doctors", tags=["doctors"])
 
+# GET routes deliberately stay open to any authenticated user: the doctor
+# directory (name, specialization, department, bio — no PHI) is meant to be
+# browsable by patients choosing a specialist and staff alike, same as
+# `GET /doctors/search`. Only mutations are ownership-gated, via
+# `doctor:manage` (roster administration — care_coordinator/admin/pcp/
+# specialist; not the bare `patient` role).
+
 
 @router.post("/", response_model=DoctorResponse, status_code=status.HTTP_201_CREATED)
 async def create_doctor(
     data: DoctorCreate,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("doctor:manage")),
 ):
     doctor = Doctor(**data.model_dump())
     db.add(doctor)
@@ -65,7 +72,7 @@ async def update_doctor(
     doctor_id: int,
     data: DoctorUpdate,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("doctor:manage")),
 ):
     result = await db.execute(
         select(Doctor).where(Doctor.id == doctor_id, Doctor.deleted_at.is_(None))
@@ -87,7 +94,7 @@ async def update_doctor(
 async def delete_doctor(
     doctor_id: int,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("doctor:manage")),
 ):
     result = await db.execute(
         select(Doctor).where(Doctor.id == doctor_id, Doctor.deleted_at.is_(None))

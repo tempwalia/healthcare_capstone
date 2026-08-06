@@ -31,3 +31,11 @@ class TokenData(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class MeResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+    roles: list[str]
+    permissions: list[str]

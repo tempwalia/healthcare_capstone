@@ -1,13 +1,16 @@
 from httpx import AsyncClient
 
+from tests.test_referral import _grant_role
+
 
 async def _create_doctor(test_client, headers, test_doctor_data):
     return (await test_client.post("/doctors/", json=test_doctor_data, headers=headers)).json()
 
 
 async def test_generate_slots_from_availability(
-    test_client: AsyncClient, auth_headers, test_doctor_data
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data
 ):
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
     doctor = await _create_doctor(test_client, auth_headers, test_doctor_data)
 
     availability = await test_client.post(
@@ -28,7 +31,10 @@ async def test_generate_slots_from_availability(
     assert all(s["doctor_id"] == doctor["id"] and not s["is_booked"] for s in slots)
 
 
-async def test_generate_slots_is_idempotent(test_client: AsyncClient, auth_headers, test_doctor_data):
+async def test_generate_slots_is_idempotent(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data
+):
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
     doctor = await _create_doctor(test_client, auth_headers, test_doctor_data)
     await test_client.post(
         "/schedule/availability/",
@@ -48,8 +54,9 @@ async def test_generate_slots_is_idempotent(test_client: AsyncClient, auth_heade
 
 
 async def test_book_slot_creates_appointment_and_marks_slot_booked(
-    test_client: AsyncClient, auth_headers, test_doctor_data, test_patient_data
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data, test_patient_data
 ):
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
     doctor = await _create_doctor(test_client, auth_headers, test_doctor_data)
     patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
     await test_client.post(
@@ -86,8 +93,9 @@ async def test_book_slot_creates_appointment_and_marks_slot_booked(
 
 
 async def test_generate_slots_for_doctor_without_availability_returns_empty(
-    test_client: AsyncClient, auth_headers, test_doctor_data
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data
 ):
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
     doctor = await _create_doctor(test_client, auth_headers, test_doctor_data)
     response = await test_client.post(
         "/schedule/slots/generate", json={"doctor_id": doctor["id"], "days_ahead": 14}, headers=auth_headers
