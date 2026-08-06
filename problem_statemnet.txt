@@ -1,0 +1,98 @@
+Architect Academy 
+Intelligent Care Coordination & Referral Management Platform 
+Patients referred by primary care providers to specialist physicians frequently encounter delays 
+and uncertainty throughout the referral process due to disconnected healthcare systems, 
+incomplete clinical information, manual insurance validation, and inefficient appointment 
+scheduling workflows. These challenges often result in longer wait times, poor care coordination, 
+limited visibility into referral status, and reduced patient satisfaction. 
+Design and implement a digital referral management platform that enables seamless 
+coordination among patients, primary care providers, specialists, and payers. The solution 
+should streamline referral processing, facilitate information exchange, improve scheduling 
+efficiency, provide real-time status visibility, and enhance the overall patient care journey while 
+ensuring compliance with healthcare regulations and data privacy requirements. 
+Encouraged to explore AI-powered capabilities and Model Context Protocol (MCP) based 
+integrations as part of their solution design. While not mandatory, the proposed architecture 
+should evaluate opportunities to: 
+* Introduce AI applications or agents that assist patients, providers, specialists, or payers 
+throughout the referral lifecycle. 
+* Leverage Generative AI for summarization of clinical documents, referral prioritization, 
+conversational support, or intelligent recommendations. 
+* Design MCP-enabled integrations to securely connect AI agents with enterprise 
+systems, healthcare applications, payer platforms, knowledge repositories, and 
+scheduling services. 
+* Demonstrate how AI agents can collaborate while maintaining appropriate governance, 
+security, auditability, and privacy controls. 
+* Consider human-in-the-loop workflows for critical healthcare decisions. 
+Hint: Consider how an intelligent referral coordinator could proactively: 
+1. Collect missing information from disparate systems. 
+2. Verify insurance eligibility. 
+3. Recommend appropriate specialists. 
+4. Schedule appointments automatically based on availability and patient preferences. 
+5. Provide real-time referral status updates through conversational interfaces. 
+AI Opportunities 
+* Extract diagnosis and procedure codes from uploaded referral documents. 
+* Recommend specialists based on diagnosis, location, and insurance network. 
+* Summarise referral history for specialists before consultation. 
+* Identify missing documents before referral submission. 
+* Predict referral delays and recommend escalation. 
+* Answer patient queries through a conversational assistant. 
+* Suggest alternative providers if appointments exceed target wait times. 
+Internal - General Use 
+Architect Academy 
+Deliverables for the Capstone 
+1. Architecture & Designing  
+* Business capability map. 
+* Key Non-Functional Requirements 
+* Sample Architecture Decisions (ADRs) 
+o Trade-off analysis (REST vs events, orchestration vs choreography, stateful vs 
+stateless). 
+* Healthcare context diagram (Payers, Providers, EHR, Labs, Pharmacy). 
+o High-Level Design (HLD). 
+* Domain decomposition into microservices. 
+o Stateful vs Stateless Services 
+* API specifications with sample requests and responses. 
+o Example 
+* Referral APIs 
+* Eligibility 
+* Provider search & schedule 
+* Notification and Clinical Documents 
+* Sequence diagrams for the referral workflow. 
+o Event catalogue and event flow. 
+Optional 
+* Deployment view (cloud-native on Kubernetes). 
+* Security architecture. 
+* AI Copilot and agent integration design. 
+2. Implementation (Coding & Testing)  
+* End-to-End AI Referral Management Solution implementing the assigned use 
+case. 
+* Multi-Agent Workflow developed using LangChain/LangGraph with MCP 
+integration where applicable. 
+* Document Processing & Reasoning to extract, analyze, and summarize referral 
+information from uploaded documents. 
+* Conversational AI Assistant capable of answering user queries related to referrals 
+and recommendations. 
+* Testing Evidence including functional, unit, and integration test cases with 
+documented results. 
+* Implement the core referral workflow covering referral submission, eligibility 
+verification, specialist recommendation, appointment scheduling, and patient 
+notification. 
+* As part of the solution, implement any four (4) AI Opportunities listed in the 
+problem statement, which may include the mandatory capabilities above where 
+applicable. 
+* External systems (EHR, payer platforms, provider directories, scheduling 
+systems, laboratories, pharmacies, etc.) may be mocked where required, 
+provided that integration contracts, workflows, and interactions are clearly 
+demonstrated and documented. 
+Internal - General Use 
+2. Deployment  
+Architect Academy 
+* Dockerized Deployment with source code, Dockerfile, README, and instructions 
+to run the solution in a container. 
+* Evaluation will be done based on docker container execution and program should 
+be able to carry out all inline functionality 
+Evaluation Focus Areas (to be reviewed): 
+* End-to-end referral workflow orchestration 
+* Integration with provider, payer, and scheduling systems 
+* Real-time status tracking and stakeholder visibility 
+* Analytics and operational insights for care coordination teams 
+Internal - General Use 
