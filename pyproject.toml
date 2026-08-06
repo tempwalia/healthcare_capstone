@@ -1,0 +1,51 @@
+[project]
+name = "healthcare_capstone"
+version = "0.1.0"
+description = "Intelligent Care Coordination & Referral Management Platform"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.16.1",
+    "asyncpg>=0.30.0",
+    "fastapi>=0.115.12",
+    "passlib[bcrypt]>=1.7.4",
+    "pydantic[email]>=2.11.7",
+    "pydantic-settings>=2.9.1",
+    "python-jose[cryptography]>=3.5.0",
+    "python-multipart>=0.0.20",
+    "sqlalchemy>=2.0.41",
+    "uvicorn[standard]>=0.34.3",
+    "fastapi-mcp>=0.3.4",
+    "aiosqlite>=0.21.0",
+    # fastapi-mcp 0.4.0 calls mcp's Server.__init__() with the pre-2.0 positional
+    # signature (name, description); mcp>=2.0 dropped that signature and breaks
+    # FastApiMCP(app) at import time. Pin below 2.0 until fastapi-mcp catches up.
+    "mcp<2.0.0",
+    # passlib 1.7.4 (last release, unmaintained since 2020) probes bcrypt's
+    # __about__.__version__ during backend self-test; bcrypt>=4.1 removed it,
+    # which makes passlib's wrap-bug self-test raise instead of just warn.
+    # Pin bcrypt to the last 4.0.x release until passlib/bcrypt sort this out.
+    "bcrypt>=4.0.1,<4.1",
+    "slowapi>=0.1.9",
+    "langgraph>=1.2.10",
+    "langchain-openai>=1.4.1",
+    "langchain-mcp-adapters>=0.3.2",
+    "langgraph-checkpoint-postgres>=3.1.1",
+    "psycopg[binary,pool]>=3.3.4",
+    "tenacity>=9.1.4",
+    "pypdf>=6.15.0",
+]
+
+[dependency-groups]
+dev = [
+    "coverage>=7.9.1",
+    "httpx>=0.28.1",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "mypy>=1.16.0",
+    "pytest>=8.4.0",
+    "pytest-asyncio>=1.0.0",
+    "ruff>=0.11.13",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

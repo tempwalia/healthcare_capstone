@@ -10,3 +10,13 @@ passlib[bcrypt]>=1.7.4
 python-multipart>=0.0.20
 fastapi-mcp>=0.3.4
 aiosqlite>=0.21.0
+mcp<2.0.0
+bcrypt>=4.0.1,<4.1
+slowapi>=0.1.9
+langgraph>=1.2.10
+langchain-openai>=1.4.1
+langchain-mcp-adapters>=0.3.2
+langgraph-checkpoint-postgres>=3.1.1
+psycopg[binary,pool]>=3.3.4
+tenacity>=9.1.4
+pypdf>=6.15.0

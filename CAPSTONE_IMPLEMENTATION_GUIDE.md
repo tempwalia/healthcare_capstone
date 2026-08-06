@@ -561,6 +561,18 @@ tests/Docker** — those get extended in later phases here rather than done twic
 *Resolves Known Gap: "Role/Permission models exist but unused" (data model half); enables provider
 search & scheduling deliverable.*
 
+> **As actually built**: Phase 0 only carried over REBUILD_GUIDE §9.1–9.4 (Patients, Doctors,
+> Appointments, Medical Records) — not §9.6/§10's Referral/Insurance/Role modules. So `ReferralRequest`,
+> `InsurancePlan`, `Role`, and `Permission` below are built **fresh** with their final field set
+> directly, not "added to" a pre-existing REBUILD_GUIDE version. Two simplifications made along the
+> way: the old `ReferralStatus` lookup table + `ReferralRequest.status_id` FK from REBUILD_GUIDE §9.6
+> is **dropped entirely** — the new `status` string column (driven by `ReferralWorkflowStatus`) is the
+> single source of truth for workflow state, so there's no second status representation to keep in
+> sync. And `InsuranceClaim`/`Payment`/`Invoice` from REBUILD_GUIDE §9.6 are **not** built — nothing in
+> this guide's phases reads or writes them; only `InsurancePlan` (needed for network matching) and
+> `DoctorInsuranceNetwork` are built. Add the billing-side models later if you want that as a genuine
+> "known gap" exercise, same spirit as REBUILD_GUIDE §10's bonus models.
+
 New models:
 
 ```python
@@ -607,7 +619,16 @@ user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=True)
 latitude = Column(Float, nullable=True)
 longitude = Column(Float, nullable=True)
 
-# app/models/insurance.py — additions (network membership)
+# app/models/insurance.py — built fresh (InsurancePlan didn't exist before this phase)
+class InsurancePlan(Base):
+    __tablename__ = "insurance_plans"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    provider = Column(String(100), nullable=False)
+    coverage_details = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 class DoctorInsuranceNetwork(Base):
     __tablename__ = "doctor_insurance_networks"
     id = Column(Integer, primary_key=True, index=True)
@@ -670,13 +691,36 @@ class RolePermission(Base):
     permission_id = Column(Integer, ForeignKey("permissions.id"), primary_key=True)
 ```
 
-Seed migration (data, not schema) creates roles `patient`, `pcp`, `specialist`, `care_coordinator`,
-`payer_admin`, `admin` and a starter permission set (`referral:create`, `referral:view_own`,
-`referral:view_all`, `referral:approve`, `referral:override`, `audit:view`, `analytics:view`).
+`User.roles`/`Role.users` and `Role.permissions`/`Permission.roles` are plain `relationship(...,
+secondary=...)` pairs against the two association tables above — no extra columns on the join tables,
+so a real association-object class isn't needed for either.
+
+```python
+# app/models/refresh_token.py — model only; app/api/routes/auth.py's actual
+# /auth/refresh endpoint and rotation logic land in Phase 2.
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    token_hash = Column(String(128), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    replaced_by_id = Column(Integer, ForeignKey("refresh_tokens.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+```
+
+Seed roles `patient`, `pcp`, `specialist`, `care_coordinator`, `payer_admin`, `admin` and a starter
+permission set (`referral:create`, `referral:view_own`, `referral:view_all`, `referral:approve`,
+`referral:override`, `audit:view`, `analytics:view`, `admin:*`) via `app/core/seed.py`'s
+`seed_roles_and_permissions(db)` — idempotent (checks by name before inserting), called from
+`scripts/seed_roles.py` (`uv run python scripts/seed_roles.py`) and again from `scripts/start.sh` in
+Phase 13 so a fresh container always has roles present. `Role.permissions.append(...)` (via the
+`secondary=` relationship) is simpler here than hand-inserting `RolePermission` rows.
 
 **Definition of done**: `alembic revision --autogenerate -m "referral platform domain extensions"`,
-`alembic upgrade head`, seed script inserts roles/permissions, all new tables visible in `/docs`
-once routes land in Phase 4.
+`alembic upgrade head`, `uv run python scripts/seed_roles.py` inserts roles/permissions (re-run it —
+confirm no duplicates), all new tables visible via `\dt` / your DB client; REST surface for these
+tables lands in Phase 4.
 
 ---
 
@@ -1206,6 +1250,52 @@ eligibility → specialist recommendation → **pauses** → `GET /referral/requ
 per your RBAC policy) → workflow completes through scheduling + notification. Restart the API
 container mid-pause and confirm resume still works (proves ADR-004's externalized state).
 
+**Implementation notes (deviations from the sketch above, found while actually building this
+phase)**:
+- `app/agents/llm.py` uses `langchain_openai.ChatOpenAI` against `settings.llm_base_url` (Groq's
+  OpenAI-compatible endpoint) gated on `settings.llm_enabled`/`llmgw_api_key` — **not**
+  `langchain_anthropic`/`settings.llm_provider` as shown above, since that's not how this project's
+  `.env`/`app/core/config.py` are actually configured (see ADR-005's real settings, §"LLM (Groq
+  OpenAI-compatible endpoint)").
+- `llm_rank_candidates` (referenced above but never defined) is implemented in
+  `app/agents/nodes/specialist.py` via `.with_structured_output()` against a small
+  `{doctor_id, score, reasons}` model, falling back to `rule_based_rank` on any LLM error or
+  unmapped `doctor_id` — this path genuinely executes during local smoke testing (a real Groq key is
+  configured), not just the stub path.
+- `intake_node` is intentionally thin in Phase 6: no PDF parsing, no LLM code extraction, no
+  missing-document gating (always proceeds straight to eligibility with empty code lists). Real
+  extraction is Phase 7's job; gating on missing documents can't work correctly yet anyway since the
+  background workflow starts the instant a referral is created, before a client could possibly have
+  uploaded a document (a separate call against the now-existing `referral_id`).
+- `specialist_node`'s specialty search falls back to keyword-matching the referral's free-text
+  `reason` field when `diagnosis_codes` is empty (always true pre-Phase-7) — see
+  `infer_specialty()`. `insurance_plan_id` is always omitted from `search_providers` calls: no
+  numeric insurance-plan id exists anywhere in this schema (`Patient` only has free-text
+  `insurance_provider`/`insurance_policy_number`), so every candidate is honestly reported
+  out-of-network rather than faking a plan id.
+- `scheduling_node` does **not** write `referral.specialist_id = selected_doctor_id`: that column is
+  a real FK into this platform's own `doctors` table, but the mock provider directory's `doctor_id`
+  (88, 91, ...) is a separate synthetic ID space with no corresponding row there. SQLite let this
+  slide in tests (no FK enforcement by default); real Postgres correctly rejected it with a
+  `ForeignKeyViolationError` — caught during the manual smoke test, not pytest.
+- `call_tool_audited` (`app/agents/audit.py`) strips `None`-valued args before invoking any tool:
+  `fastapi_mcp` forwards an arg valued `None` as a literal empty query string (e.g.
+  `?insurance_plan_id=`), which FastAPI then rejects as invalid rather than treating as "not
+  provided" — a real bug reproduced against the actual mock systems, not a hypothetical.
+- A `GET /referral-workflow/{id}/state` endpoint was added (not in the sketch above) to surface the
+  LangGraph-only fields (`specialist_candidates`, `eligibility`, `diagnosis_codes`,
+  `missing_documents`, `appointment`) that don't live as columns on `ReferralRequest` and so aren't
+  part of `GET /referral/requests/{id}`'s response.
+- Tests can't reach a live MCP/HTTP endpoint (no socket under httpx's `ASGITransport`) or use
+  `AsyncPostgresSaver` (needs real Postgres), so `app.agents.mcp_clients.get_tools` is the one seam
+  tests fake (round-tripping through the same mock FastAPI apps via `ASGITransport` — see
+  `tests/agent_fakes.py`), and the checkpointer is `AsyncSqliteSaver` in-memory per test instead of
+  `AsyncPostgresSaver`.
+- **Windows dev note**: psycopg3's async mode can't run under Windows' default `ProactorEventLoop`,
+  and uvicorn hardcodes Proactor on win32 regardless of `asyncio`'s event-loop policy. Run uvicorn
+  locally with `--loop app.core.event_loop:selector_event_loop_factory` (see README) — not needed on
+  Linux/macOS, including the eventual Docker deployment.
+
 ---
 
 ### Phase 7 — Document Processing & Reasoning (P0)
@@ -1279,6 +1369,40 @@ uploading a referral with only a letter (no imaging/labs) produces `missing_docu
 ["recent_imaging_or_labs"]` and the workflow visibly pauses at `awaiting_documents`; after scheduling,
 a `SpecialistNote` with a readable summary exists for the specialist to read before consult.
 
+**Implementation notes (deviations from the sketch above, found while actually building this
+phase)**:
+- The **core wrinkle this phase has to solve, that the sketch above doesn't address at all**: the
+  background workflow starts the instant `POST /referral/requests/` returns, before a client could
+  possibly have uploaded any document yet (uploads are a separate subsequent call against the
+  now-existing `referral_id`) — so `intake_node` *always* hits `await_documents` → `END` on its first
+  run. Fix: `upload_referral_document` (`app/api/routes/referral.py`) now takes `BackgroundTasks` and
+  re-triggers `run_referral_workflow(referral.id)` whenever the referral's current status is
+  `awaiting_documents`. Verified empirically (not assumed) that calling `graph.ainvoke(new_input,
+  config)` again on a thread already at `END` (not interrupted) restarts from `START` with the new
+  input merged in — `intake_node` re-runs, re-queries documents fresh from Postgres (so it always sees
+  whatever's been uploaded so far regardless of any graph-state subtlety), and proceeds once both
+  required types are present. This is exactly the "resumes via a fresh submit once docs arrive"
+  comment already on the `await_documents -> END` edge in Phase 6's `graph.py`.
+- `extract_document_text` handles `.txt` files directly (not just `.pdf` via `pypdf`) — a small,
+  deliberate generalization: this project's own document-upload tests use plain-text referral
+  letters, and there's nothing about the requirement ("extract codes from document text") that's
+  actually PDF-specific.
+- Both the LLM code-extraction call (`.with_structured_output(ExtractedCodes)`) and the LLM summary
+  call in `summarizer_node` are wrapped in `try`/`except`, falling back to the regex/template path on
+  any failure — same "never a 500" resilience posture already established for `llm_rank_candidates` in
+  Phase 6, applied consistently here too.
+- `infer_document_types` is a simple filename-keyword heuristic (`"letter"/"referral"` →
+  `referral_letter`; `"mri"/"x-ray"/"imaging"/"lab"/"scan"/...` → `recent_imaging_or_labs`) — content-
+  based classification would need real document understanding, out of scope for a capstone-scope
+  fallback rule.
+- Verified end-to-end against real Postgres + a real Groq LLM call (not just the deterministic
+  fallback): a referral letter mentioning "M54.5" plus an imaging report describing a disc bulge
+  produced `diagnosis_codes: ["M54.5", "M51.26"]` — the LLM correctly inferred the second code from
+  context, not just regex-matched the first — which then fed `eligibility_node`'s real procedure code
+  (previously always `"UNKNOWN"` pre-Phase-7) and correctly flipped `prior_auth_required` to `true`
+  (the mock payer's M51/M54 rule). `summarizer_node`'s real LLM path produced a coherent clinical
+  summary noting the patient had no allergies or prior visits on file.
+
 ---
 
 ### Phase 8 — Specialist Recommendation & Scheduling Automation (P0)
@@ -1332,6 +1456,28 @@ def rule_based_rank(candidates: list[dict]) -> list[dict]:
 **Definition of done**: a referral with an eligible, in-network specialty produces a ranked candidate
 list where the top choice is explainable (`reasons` populated) whether or not an API key is set;
 approving a candidate produces a real booked slot in `schedule_slots` with `is_booked=True`.
+
+**Implementation notes**: this phase's entire code content (`scheduling_node`, `rule_based_rank`) was
+already pulled forward and built in Phase 6, because Phase 6's own Definition of Done required the
+graph to reach `scheduled` end-to-end — see Phase 6's implementation notes. Nothing new was built for
+Phase 8 itself; what was missing was test coverage for `scheduling_node`'s "no slots within target"
+branch specifically, added now (`tests/test_referral_workflow_agents.py::test_scheduling_with_no_available_slots_marks_delayed`,
+forcing the mock scheduling system's own `MAX_SLOTS_RETURNED = 0`).
+
+The DoD's "`schedule_slots` with `is_booked=True`" line refers to this platform's **own** internal
+scheduling tables (`app/models/schedule.py::ScheduleSlot`, REBUILD_GUIDE §9, already built pre-Phase-6)
+— a genuinely different table from the mocked external Scheduling system `scheduling_node` actually
+calls over MCP. It's not literally satisfiable as written: the recommended specialist's `doctor_id`
+comes from the mock provider directory's own synthetic ID space (88, 91, ...), which — same root cause
+as Phase 6's `specialist_id` note — has no corresponding row in this platform's own `doctors` table, so
+there's no valid `doctor_id` to book a `ScheduleSlot` against without inventing a new "external,
+unregistered specialist" concept nowhere else in scope. ADR-001's own domain-decomposition table
+already frames this correctly: the *mocked* Scheduling system is `schedule_slots`/`appointments`'
+external dependency, standing in for the specialist's own office calendar — so a real, conflict-checked
+booking against the mock system (which `scheduling_node` already does, and which
+`GET /mock/scheduling/mcp`'s `book_slot`/`get_availability` round-trips confirm end-to-end in both
+pytest and the manual Postgres smoke tests) is the correct, achievable equivalent of this DoD line, not
+a shortfall.
 
 ---
 

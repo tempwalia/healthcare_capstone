@@ -1,0 +1,39 @@
+# Environments
+venv/
+.venv/
+env/
+ENV/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Alembic (keep migration scripts, ignore local db files)
+*.db
+*.sqlite3
+
+# Uploaded referral documents (local-disk storage, capstone scope only)
+uploads/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
