@@ -43,35 +43,41 @@ class ProviderCandidate(BaseModel):
     in_network: bool
 
 
+def _build_candidate(provider: dict, insurance_plan_id: Optional[int]) -> ProviderCandidate:
+    return ProviderCandidate(
+        doctor_id=provider["doctor_id"],
+        name=provider["name"],
+        specialty=provider["specialty"],
+        location=provider["location"],
+        distance_mi=provider["distance_mi"],
+        rating=provider["rating"],
+        next_available_days=provider["next_available_days"],
+        in_network=insurance_plan_id is not None and insurance_plan_id in provider["in_network_plan_ids"],
+    )
+
+
 @app.get("/providers/search", response_model=List[ProviderCandidate], operation_id="search_providers")
 async def search_providers(
     specialty: str,
     location: Optional[str] = None,
     insurance_plan_id: Optional[int] = None,
 ):
-    results = []
-    for provider in PROVIDERS:
-        if specialty.strip().lower() not in provider["specialty"].lower():
-            continue
-        if location and location.strip().lower() not in provider["location"].lower():
-            continue
+    specialty_matches = [p for p in PROVIDERS if specialty.strip().lower() in p["specialty"].lower()]
 
-        in_network = (
-            insurance_plan_id is not None and insurance_plan_id in provider["in_network_plan_ids"]
-        )
-        results.append(
-            ProviderCandidate(
-                doctor_id=provider["doctor_id"],
-                name=provider["name"],
-                specialty=provider["specialty"],
-                location=provider["location"],
-                distance_mi=provider["distance_mi"],
-                rating=provider["rating"],
-                next_available_days=provider["next_available_days"],
-                in_network=in_network,
-            )
-        )
+    if location:
+        location_matches = [p for p in specialty_matches if location.strip().lower() in p["location"].lower()]
+        # This toy directory only knows a handful of canned locations
+        # ("Downtown"/"Midtown"/"Uptown") — a real caller-entered
+        # location/city that doesn't match any of them shouldn't zero out
+        # every candidate and leave a referral permanently stuck at
+        # awaiting_specialist_approval with nothing to review. Location
+        # narrows results when it actually matches something; it never
+        # eliminates every option when it matches nothing at all.
+        candidates = location_matches or specialty_matches
+    else:
+        candidates = specialty_matches
 
+    results = [_build_candidate(p, insurance_plan_id) for p in candidates]
     return sorted(results, key=lambda p: p.distance_mi)
 
 

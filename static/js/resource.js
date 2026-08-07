@@ -81,6 +81,10 @@ export function createResourceModule(config) {
         delBtn.addEventListener("click", () => handleDelete(row));
         buttons.push(delBtn);
       }
+      // Lets a resource offer narrower, ownership-scoped actions (e.g. a
+      // patient rescheduling/cancelling their own appointment) to callers
+      // who don't hold the blanket update/delete permission above.
+      if (config.extraActions) buttons.push(...config.extraActions(row, load));
       return buttons;
     }
 
@@ -116,7 +120,8 @@ export function createResourceModule(config) {
       renderTable(tableHost, {
         columns: config.columns,
         rows,
-        actions: canEdit || canDelete ? buildActions : null,
+        actions: canEdit || canDelete || config.extraActions ? buildActions : null,
+        onRowClick: config.onRowClick,
         emptyMessage: `No ${config.title.toLowerCase()} found.`,
       });
       renderPager(pagerHost, {

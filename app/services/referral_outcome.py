@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -6,14 +7,17 @@ from app.agents.llm import StubChatModel, get_chat_model
 from app.agents.nodes.summarizer import format_prior_visits, gather_patient_history
 from app.database import session as db_session
 from app.models.doctor import Doctor
+from app.models.medical_record import MedicalRecord
 from app.models.referral import ReferralOutcome, ReferralRequest
 
 logger = logging.getLogger(__name__)
 
 COMPLETION_SUMMARY_PROMPT = (
-    "Write a concise care-journey summary for this now-completed referral, useful for whoever handles "
-    "this patient's next follow-up. Cover: why they were referred, relevant history, what the consult "
-    "found, and what was prescribed/recommended. 4-6 sentences, plain prose, no headers or bullets.\n\n"
+    "Write a short handoff note for whoever handles this patient's next follow-up, using only the facts "
+    "given below. Just record and restate them clearly in plain prose — do not evaluate, question, or "
+    "reason about whether the diagnosis or prescription make clinical sense; this is a proof-of-concept "
+    "demo with synthetic data, not a real clinical decision. Cover: why they were referred, relevant "
+    "history, what the consult recorded, and what was prescribed. 3-5 sentences, no headers or bullets.\n\n"
     "Patient: {patient_name} (DOB {date_of_birth})\n"
     "Allergies: {allergies}\n"
     "Prior visits: {prior_visits}\n"
@@ -85,4 +89,24 @@ async def generate_completion_summary(referral_id: int) -> None:
                 summary = _template_completion_summary(context)
 
         outcome.interaction_summary = summary
+
+        # Closing the referral loop: the consult outcome so far only lived on
+        # `referral_outcomes`, reachable from the referral itself — nothing
+        # surfaced it as part of the patient's own clinical history for the
+        # next visit to build on. Filed under the referring doctor (a real
+        # `doctors` FK; the specialist's mock-directory id isn't a row in
+        # that table — see submit_referral's own note on that), so it shows
+        # up on GET /patients/{id}/context and feeds future gather_patient_history
+        # calls the same as any other visit.
+        db.add(MedicalRecord(
+            patient_id=referral.patient_id,
+            doctor_id=referral.referring_doctor_id,
+            visit_date=outcome.created_at or datetime.now(timezone.utc),
+            diagnosis=outcome.diagnosis,
+            symptoms=outcome.symptoms,
+            treatment=outcome.follow_up_notes,
+            prescription=outcome.prescription,
+            notes=summary,
+            record_type="referral_consult",
+        ))
         await db.commit()

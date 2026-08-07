@@ -29,7 +29,21 @@ ROLE_TOOL_ALLOWLIST: dict[str, Set[str]] = {
     "patient": BASE_REFERRAL_TOOLS,
     "pcp": BASE_REFERRAL_TOOLS,
     "specialist": BASE_REFERRAL_TOOLS,
-    "care_coordinator": BASE_REFERRAL_TOOLS | {"get_workflow_state", "list_slots", "list_availability"},
+    "care_coordinator": BASE_REFERRAL_TOOLS
+    | {
+        "get_workflow_state", "list_slots", "list_availability",
+        # Both added for the "de-siloing" pass: same visibility gate as
+        # get_referral (_get_scoped_referral) and the same analytics:view
+        # permission the coordinator role already holds — no new scoping
+        # surface, just more of what this role can already see through the
+        # dashboard, now reachable conversationally too.
+        "get_referral_timeline", "get_referral_analytics_summary",
+    },
+    # Same referral:view_all breadth as care_coordinator (this role isn't
+    # tied to any one referral either — see app/core/seed.py) plus
+    # get_workflow_state to check whether a referral still has a pending
+    # specialist-approval step to pick up.
+    "doctor": BASE_REFERRAL_TOOLS | {"get_workflow_state"},
 }
 
 ROLE_SYSTEM_PROMPTS: dict[str, str] = {
@@ -55,13 +69,22 @@ ROLE_SYSTEM_PROMPTS: dict[str, str] = {
         "You are an assistant for care coordination staff using the Intelligent Care Coordination "
         "platform. Help the caller track referral status platform-wide, including specialist "
         "recommendation reasoning, workflow state, and scheduling availability, to support "
-        "coordinating patient care."
+        "coordinating patient care. You can also pull a specific referral's full milestone-by-milestone "
+        "timeline, and a platform-wide referral analytics summary (status breakdown, delay-risk count, "
+        "average time to schedule, eligibility denial rate, top specialties) — use these for questions "
+        "about referral history or the overall referral funnel."
+    ),
+    "doctor": (
+        "You are an assistant for the doctor role on the Intelligent Care Coordination platform — a "
+        "POC stand-in for a specialist actually seeing patients, not tied to any one referral. Help the "
+        "caller find referrals still awaiting a specialist decision, and review a referral's documents, "
+        "prior notes, and workflow state before they select a specialist or record a consult outcome."
     ),
 }
 
 # Most-privileged first: a user with multiple roles gets the broadest
 # matching tool/prompt configuration.
-_ROLE_PRECEDENCE = ["care_coordinator", "specialist", "pcp", "patient"]
+_ROLE_PRECEDENCE = ["care_coordinator", "doctor", "specialist", "pcp", "patient"]
 
 
 def resolve_role_for_tools(granted_role_names: Set[str]) -> str:

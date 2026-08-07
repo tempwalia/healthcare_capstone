@@ -6,11 +6,51 @@ import { openModal } from "../components/modal.js";
 import { toast } from "../components/toast.js";
 import {
   el, escapeHtml, formatDate, formatDateTime, capitalize,
-  referralStatusBadgeClass, extractionStatusBadgeClass, REFERRAL_STATUSES,
+  referralStatusBadgeClass, extractionStatusBadgeClass, REFERRAL_STATUSES, REFERRAL_PROGRESS_INFO,
 } from "../utils.js";
 
 const patientNameCache = new Map();
 const doctorNameCache = new Map();
+
+// POC data: a handful of canned prescriptions per specialty so a doctor
+// completing a referral's outcome can pick a plausible one instead of
+// typing from scratch — there are no real prescribing doctors behind this
+// demo, so nothing here should be read as real clinical guidance.
+const SAMPLE_PRESCRIPTIONS_BY_SPECIALTY = {
+  Orthopedics: [
+    "Ibuprofen 400mg three times daily for 5 days; physical therapy 2x/week for 4 weeks; follow up in 4 weeks.",
+    "Naproxen 500mg twice daily for 7 days; activity modification; re-evaluate if no improvement in 2 weeks.",
+  ],
+  Cardiology: [
+    "Aspirin 81mg once daily; Atorvastatin 20mg at bedtime; follow-up ECG and lipid panel in 2 weeks.",
+    "Metoprolol 25mg twice daily; low-sodium diet; follow up in 1 week to reassess symptoms.",
+  ],
+  Dermatology: [
+    "Hydrocortisone 1% cream twice daily for 7 days; Cetirizine 10mg once daily for itching.",
+    "Topical clindamycin gel once daily; avoid known irritants; follow up in 3 weeks.",
+  ],
+  General: [
+    "Acetaminophen 500mg as needed for pain; rest and hydration; follow up in 2 weeks if symptoms persist.",
+  ],
+};
+
+// Mirrors the same keyword table used elsewhere for referral-specialty
+// matching (schedule.js / app/agents/nodes/specialist.py) — a lightweight
+// client-side approximation used only to sort the sample-prescription
+// dropdown, not a real prescribing decision.
+const PRESCRIPTION_SPECIALTY_KEYWORDS = {
+  Orthopedics: ["back", "spine", "joint", "knee", "hip", "shoulder", "fracture", "orthopedic"],
+  Cardiology: ["heart", "cardiac", "chest pain", "palpitation", "cardio"],
+  Dermatology: ["skin", "rash", "derma", "mole", "eczema"],
+};
+
+function inferPrescriptionSpecialty(text) {
+  const lower = (text || "").toLowerCase();
+  for (const [specialty, keywords] of Object.entries(PRESCRIPTION_SPECIALTY_KEYWORDS)) {
+    if (keywords.some((k) => lower.includes(k))) return specialty;
+  }
+  return null;
+}
 
 async function resolvePatientName(id) {
   if (patientNameCache.has(id)) return patientNameCache.get(id);
@@ -247,14 +287,45 @@ export async function renderDetail(container, { id }) {
       el("span", { class: referralStatusBadgeClass(referral.status) }, capitalize(referral.status)),
     ]);
     const top = el("div", { class: "card-header" }, [titleRow]);
+    const editTooltip = "Editing referrals requires coordinator, specialist, or admin privileges.";
     if (canEdit) {
-      const editBtn = el("button", { class: "btn-secondary btn-sm" }, "Edit");
+      const editBtn = el("button", { class: "btn-secondary btn-sm", title: editTooltip }, "Edit");
       editBtn.addEventListener("click", openEditForm);
-      const delBtn = el("button", { class: "btn-danger btn-sm" }, "Delete");
+      const delBtn = el("button", { class: "btn-danger btn-sm", title: editTooltip }, "Delete");
       delBtn.addEventListener("click", handleDelete);
       top.appendChild(el("div", { class: "row-actions" }, [editBtn, delBtn]));
     }
     headerHost.appendChild(top);
+
+    // "What's happening right now, whose job is it, what happens next" — a
+    // raw status word like `awaiting_specialist_approval` doesn't convey any
+    // of that on its own. Shown to every role, not just the patient: a
+    // coordinator benefits from the same at-a-glance framing.
+    const progress = REFERRAL_PROGRESS_INFO[referral.status];
+    if (progress) {
+      const needsMyApproval = referral.status === "awaiting_specialist_approval" && hasPermission("referral:approve");
+      const bannerChildren = [
+        el("div", { style: "font-weight:650;margin-bottom:2px;" }, `Current step: ${progress.label}`),
+        el("div", { style: "font-size:12.5px;" }, `Waiting on: ${progress.waitingOn}`),
+        el("div", { style: "font-size:12.5px;" }, progress.nextStep),
+      ];
+      // The action itself lives on the Workflow State tab, a click away and
+      // easy to miss — surface a direct jump-to-it button right where the
+      // status banner already tells an approver it's their turn.
+      if (needsMyApproval) {
+        const reviewBtn = el("button", { class: "btn-primary btn-sm", style: "margin-top:8px;" }, "Review & select a specialist →");
+        reviewBtn.addEventListener("click", () => {
+          activeTab = "workflow";
+          renderTabs();
+          renderPanel();
+        });
+        bannerChildren.push(reviewBtn);
+      }
+      headerHost.appendChild(
+        el("div", { class: `banner ${needsMyApproval ? "banner-warning" : "banner-info"}`, style: "margin-bottom:14px;" }, bannerChildren)
+      );
+    }
+
     headerHost.appendChild(
       el("div", { class: "grid-3" }, [
         infoBlock("Patient", patientName),
@@ -265,6 +336,11 @@ export async function renderDetail(container, { id }) {
         infoBlock("Reason", referral.reason || "—"),
       ])
     );
+    if (hasPermission("patient:view_all") || hasPermission("patient:view_own")) {
+      const profileLink = el("a", { href: `#/patients/${referral.patient_id}` }, "View full patient profile →");
+      profileLink.style.cssText = "display:inline-block;margin-top:10px;font-size:12.5px;";
+      headerHost.appendChild(profileLink);
+    }
   }
 
   function openEditForm() {
@@ -300,10 +376,15 @@ export async function renderDetail(container, { id }) {
     }
   }
 
+  // Outcome visibility mirrors the referral's own visibility server-side
+  // (GET /referral/requests/{id}/outcome uses the same scope as the
+  // referral itself) — anyone who can open this detail page at all can
+  // also see its recorded outcome/summary once one exists.
   const TABS = [
     { key: "documents", label: "Documents" },
     { key: "notes", label: "Notes" },
     { key: "workflow", label: "Workflow State" },
+    { key: "timeline", label: "Timeline" },
     { key: "outcome", label: "Outcome" },
   ];
 
@@ -325,6 +406,7 @@ export async function renderDetail(container, { id }) {
     if (activeTab === "documents") await renderDocumentsTab();
     else if (activeTab === "notes") await renderNotesTab();
     else if (activeTab === "workflow") await renderWorkflowTab();
+    else if (activeTab === "timeline") await renderTimelineTab();
     else if (activeTab === "outcome") await renderOutcomeTab();
   }
 
@@ -340,7 +422,10 @@ export async function renderDetail(container, { id }) {
     panelHost.innerHTML = "";
     panelHost.appendChild(
       el("div", { class: "banner banner-info" },
-        'Upload one file whose name contains "referral" or "letter", and one whose name contains "mri", "x-ray", "imaging", "lab", "scan", "ultrasound", "radiology", or "ct" — both are required before the workflow moves past intake.'
+        "Documents are optional — a filled-in Reason is enough to move this referral forward. Uploading is still " +
+        'useful for more accurate code extraction: one file whose name contains "referral" or "letter", and one ' +
+        'whose name contains "mri", "x-ray", "imaging", "lab", "scan", "ultrasound", "radiology", or "ct". If ' +
+        "nothing is uploaded, a sample document pair is auto-attached so extraction still has something to work with."
       )
     );
 
@@ -436,7 +521,7 @@ export async function renderDetail(container, { id }) {
       body.innerHTML = "";
 
       if (Array.isArray(stateData.missing_documents) && stateData.missing_documents.length) {
-        body.appendChild(el("div", { class: "banner banner-warning" }, `Missing documents: ${stateData.missing_documents.join(", ")}`));
+        body.appendChild(el("div", { class: "banner banner-warning" }, `Waiting on: ${stateData.missing_documents.join(", ")} (or a filled-in Reason)`));
       }
       if (Array.isArray(stateData.diagnosis_codes) && stateData.diagnosis_codes.length) {
         body.appendChild(
@@ -446,6 +531,10 @@ export async function renderDetail(container, { id }) {
 
       if (Array.isArray(stateData.specialist_candidates) && stateData.specialist_candidates.length) {
         const canApprove = referral.status === "awaiting_specialist_approval" && hasPermission("referral:approve");
+        body.appendChild(
+          el("p", { class: "muted", style: "font-size:12px;margin-bottom:8px;" },
+            "Mock external provider directory — recording a consult outcome afterward is done by care coordination staff, not these doctor IDs directly.")
+        );
         const cardsHost = el("div", { class: "grid-auto" });
         for (const candidate of stateData.specialist_candidates) {
           const score = Math.round((candidate.score || 0) * 100);
@@ -491,6 +580,39 @@ export async function renderDetail(container, { id }) {
     await load();
   }
 
+  async function renderTimelineTab() {
+    panelHost.innerHTML = "";
+    let events;
+    try {
+      events = await api.get(`/referral/requests/${referral.id}/timeline`);
+    } catch (err) {
+      panelHost.appendChild(el("div", { class: "banner banner-error" }, err.message || "Failed to load timeline."));
+      return;
+    }
+    if (!events.length) {
+      panelHost.appendChild(el("div", { class: "empty-state" }, "No timeline events yet."));
+      return;
+    }
+    const list = el("div", { class: "timeline-list" });
+    for (const event of events) {
+      const detail = Object.entries(event.payload || {})
+        .filter(([key]) => key !== "referral_id")
+        .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`)
+        .join(", ");
+      list.appendChild(
+        el("div", { class: "timeline-item" }, [
+          el("div", { class: "timeline-item-dot" }),
+          el("div", { class: "timeline-item-body" }, [
+            el("div", { style: "font-weight:600;" }, event.label),
+            el("div", { class: "muted", style: "font-size:11.5px;" }, formatDateTime(event.created_at)),
+            detail ? el("div", { class: "muted", style: "font-size:12px;margin-top:2px;" }, detail) : null,
+          ]),
+        ])
+      );
+    }
+    panelHost.appendChild(list);
+  }
+
   function buildOutcomeForm() {
     const banner = el("div", { class: "form-banner hidden" });
     const symptoms = el("textarea", { name: "symptoms" });
@@ -499,10 +621,43 @@ export async function renderDetail(container, { id }) {
     const followUp = el("textarea", { name: "follow_up_notes" });
     const submitBtn = el("button", { type: "submit", class: "btn-primary" }, "Record Outcome");
 
+    // POC convenience for the doctor role completing a referral: pick a
+    // sample prescription instead of typing one from scratch. Re-sorted
+    // (matched specialty first) as symptoms are typed; selecting an option
+    // just fills the Prescription field below — still freely editable.
+    const prescriptionSelect = el("select", {});
+    function fillPrescriptionOptions() {
+      const matched = inferPrescriptionSpecialty(symptoms.value);
+      const selected = prescriptionSelect.value;
+      const specialties = Object.keys(SAMPLE_PRESCRIPTIONS_BY_SPECIALTY);
+      const ordered = matched ? [matched, ...specialties.filter((s) => s !== matched)] : specialties;
+
+      prescriptionSelect.innerHTML = "";
+      prescriptionSelect.appendChild(el("option", { value: "" }, "Choose a sample prescription…"));
+      for (const specialty of ordered) {
+        for (const text of SAMPLE_PRESCRIPTIONS_BY_SPECIALTY[specialty]) {
+          const label = specialty === matched ? `★ ${specialty} — ${text}` : `${specialty} — ${text}`;
+          prescriptionSelect.appendChild(el("option", { value: text }, label));
+        }
+      }
+      prescriptionSelect.value = selected;
+    }
+    fillPrescriptionOptions();
+    symptoms.addEventListener("input", fillPrescriptionOptions);
+    prescriptionSelect.addEventListener("change", () => {
+      if (prescriptionSelect.value) prescription.value = prescriptionSelect.value;
+    });
+
     const form = el("form", { class: "card" }, [
       banner,
       el("div", { class: "field" }, [el("label", {}, "Symptoms"), symptoms]),
       el("div", { class: "field" }, [el("label", {}, "Diagnosis"), diagnosis]),
+      el("div", { class: "field" }, [
+        el("label", {}, "Sample Prescription"),
+        prescriptionSelect,
+        el("p", { class: "muted", style: "font-size:11.5px;margin:4px 0 0;" },
+          "POC data, ★ = matches the symptoms above — pick one to fill Prescription below, or write your own."),
+      ]),
       el("div", { class: "field" }, [el("label", {}, "Prescription"), prescription]),
       el("div", { class: "field" }, [el("label", {}, "Follow-up Notes"), followUp]),
       submitBtn,
@@ -553,9 +708,7 @@ export async function renderDetail(container, { id }) {
       }
       panelHost.appendChild(summaryCard);
     } catch (err) {
-      if (err.status === 403) {
-        panelHost.appendChild(el("div", { class: "banner banner-muted" }, "Outcome details are visible to care team staff only."));
-      } else if (err.status === 404) {
+      if (err.status === 404) {
         panelHost.appendChild(el("div", { class: "banner banner-info" }, "No outcome recorded yet."));
         if (hasPermission("referral:record_outcome")) panelHost.appendChild(buildOutcomeForm());
       } else {

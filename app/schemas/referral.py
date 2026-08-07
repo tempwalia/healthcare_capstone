@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -83,3 +83,10 @@ class ReferralOutcomeResponse(ReferralOutcomeCreate):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TimelineEventResponse(BaseModel):
+    event_type: str
+    label: str
+    payload: Dict[str, Any]
+    created_at: datetime

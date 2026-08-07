@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     llm_max_tokens_extraction: int = 300
     llm_max_tokens_summary: int = 400
     llm_max_tokens_chat: int = 500
+    # A slow/hanging Groq response previously had no app-level cutoff — since
+    # every LLM-calling node runs from a FastAPI BackgroundTask on the same
+    # single-threaded event loop, an unbounded call there stalls every other
+    # concurrent request too, not just the one referral. Bounded here, once,
+    # for every node built via get_chat_model rather than per-call.
+    llm_timeout_seconds: float = 20.0
+    llm_max_retries: int = 1
 
     # Agent orchestration (Phase 6). The mocked external systems (payer,
     # provider directory, scheduling, notification) are mounted in-process

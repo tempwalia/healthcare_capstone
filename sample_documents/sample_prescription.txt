@@ -1,0 +1,25 @@
+PRESCRIPTION
+
+Prescriber: Dr. Amara Chen, MD, Orthopedics
+Riverside Specialty Clinic
+
+Patient: [Patient Name]
+Date: [Visit Date]
+
+Diagnosis: M54.5 - Low back pain
+             M51.26 - Other intervertebral disc displacement, lumbar region
+
+Rx:
+1. Naproxen 500 mg tablets
+   Sig: Take 1 tablet by mouth twice daily with food for 14 days.
+   Dispense: 28 tablets. Refills: 0.
+
+2. Cyclobenzaprine 5 mg tablets
+   Sig: Take 1 tablet by mouth at bedtime as needed for muscle spasm.
+   Dispense: 14 tablets. Refills: 0.
+
+Follow-up: Re-evaluate in 4 weeks; continue physical therapy 2x/week.
+Return sooner if new weakness, numbness, or bowel/bladder symptoms develop.
+
+Signature: Amara Chen, MD
+License #: OR-48213

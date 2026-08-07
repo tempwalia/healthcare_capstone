@@ -1,0 +1,14 @@
+RADIOLOGY REPORT — MRI LUMBAR SPINE (72148)
+
+Clinical history: Chronic lower back pain with left leg radiation.
+
+Findings:
+- L4-L5: Moderate disc bulge with mild central canal narrowing.
+- L5-S1: Left paracentral disc protrusion contacting the traversing left S1
+  nerve root, consistent with M51.26 - intervertebral disc displacement.
+- No fracture, no acute marrow edema.
+- Vertebral body heights preserved.
+
+Impression: Findings consistent with M54.5 - low back pain secondary to
+lumbar disc disease at L5-S1. Recommend orthopedic/spine specialist
+correlation for treatment planning.

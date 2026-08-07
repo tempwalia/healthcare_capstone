@@ -3,6 +3,7 @@ from app.models.audit import AuditLog
 from app.models.doctor import Doctor
 from app.models.insurance import DoctorInsuranceNetwork, InsurancePlan
 from app.models.medical_record import MedicalRecord
+from app.models.notification import Notification
 from app.models.outbox import OutboxEvent
 from app.models.patient import Patient
 from app.models.referral import ReferralDocument, ReferralRequest, SpecialistNote
@@ -31,4 +32,5 @@ __all__ = [
     "DoctorInsuranceNetwork",
     "AuditLog",
     "OutboxEvent",
+    "Notification",
 ]

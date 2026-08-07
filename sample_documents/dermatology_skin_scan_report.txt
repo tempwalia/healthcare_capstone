@@ -1,0 +1,18 @@
+DERMOSCOPY / IMAGING REPORT
+
+Clinical history: Changing pigmented lesion, upper back; chronic plaque-like
+rash, bilateral elbows/knees.
+
+Dermoscopic findings (pigmented lesion, upper back):
+- Asymmetric pigment network with irregular borders.
+- Blue-white veil noted in one quadrant.
+- Diameter approximately 8mm.
+
+Findings (plaque lesions, elbows/knees):
+- Well-demarcated, erythematous plaques with silvery scale, consistent with
+  L40.0 - psoriasis vulgaris.
+
+Impression: Pigmented lesion features warrant biopsy (11100) to exclude
+malignancy. Plaque lesions consistent with L40.0. Recommend dermatology
+correlation; differential for plaques also includes L30.9 - dermatitis,
+unspecified.

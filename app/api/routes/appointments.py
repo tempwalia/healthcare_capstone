@@ -8,14 +8,14 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies.auth import get_current_active_user, require_permission
 from app.api.dependencies.database import get_async_session
 from app.api.dependencies.pagination import build_page
-from app.models.appointment import Appointment
+from app.models.appointment import Appointment, AppointmentStatusEnum
 from app.models.doctor import Doctor
 from app.models.patient import Patient
 from app.models.user import User
 from app.schemas.appointment import AppointmentCreate, AppointmentResponse, AppointmentUpdate
 from app.schemas.common import Page
 from app.services.audit import log_action
-from app.services.record_scope import appointment_visibility_filter
+from app.services.record_scope import _granted_permissions, _own_patient_and_doctor, appointment_visibility_filter
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
@@ -98,14 +98,32 @@ async def update_appointment(
     appointment_id: int,
     data: AppointmentUpdate,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(require_permission("appointment:manage")),
+    current_user: User = Depends(get_current_active_user),
 ):
-    result = await db.execute(
-        select(Appointment).where(Appointment.id == appointment_id, Appointment.deleted_at.is_(None))
-    )
-    appointment = result.scalar_one_or_none()
-    if not appointment:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Appointment not found")
+    """Full edit access requires `appointment:manage` (pcp/specialist/
+    care_coordinator/admin). A caller who only holds `appointment:view_own`
+    (the `patient` role) may still reschedule or cancel an appointment that
+    is theirs — a patient couldn't act on their own booking at all
+    otherwise, since `appointment:manage` is deliberately staff-only."""
+    appointment = await _get_scoped_appointment(db, current_user, appointment_id)
+    granted = await _granted_permissions(db, current_user)
+
+    if "appointment:manage" not in granted and "admin:*" not in granted:
+        patient, _ = await _own_patient_and_doctor(db, current_user)
+        if not patient or appointment.patient_id != patient.id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Missing required permission: appointment:manage")
+
+        submitted_fields = set(data.model_dump(exclude_unset=True).keys())
+        allowed_fields = {"appointment_datetime", "status", "reason"}
+        if submitted_fields - allowed_fields:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "Patients may only reschedule (appointment_datetime) or cancel (status) their own appointment",
+            )
+        if data.status is not None and data.status != AppointmentStatusEnum.CANCELLED:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "Patients may only cancel their own appointment, not set other statuses"
+            )
 
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(appointment, field, value)

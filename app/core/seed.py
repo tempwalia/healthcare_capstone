@@ -37,7 +37,7 @@ ROLE_PERMISSIONS = {
         "medical_record:view_own", "medical_record:manage",
     ],
     "specialist": [
-        "referral:view_own",
+        "referral:view_own", "referral:approve",
         "patient:view_all", "patient:manage", "doctor:manage",
         "appointment:view_own", "appointment:manage",
         "medical_record:view_own", "medical_record:manage",
@@ -50,6 +50,11 @@ ROLE_PERMISSIONS = {
         "medical_record:view_all",
     ],
     "payer_admin": ["referral:view_all", "analytics:view"],
+    "doctor": [
+        "referral:view_all", "referral:approve", "referral:record_outcome",
+        "patient:view_all", "appointment:view_all",
+        "medical_record:view_all", "medical_record:manage",
+    ],
     "admin": ["admin:*"],
 }
 
@@ -59,6 +64,11 @@ ROLE_DESCRIPTIONS = {
     "specialist": "Specialist physician — receives and acts on referrals",
     "care_coordinator": "Care coordination staff — approves/escalates referral workflow steps",
     "payer_admin": "Payer-side read access to eligibility and analytics",
+    "doctor": (
+        "POC stand-in for a specialist actually seeing patients: not tied to any one referral, so it can "
+        "pick up and complete any referral platform-wide — select a specialist, then record the consult "
+        "outcome/prescription that closes it out"
+    ),
     "admin": "Platform administrator",
 }
 

@@ -67,6 +67,30 @@ async def test_directory_filters_by_specialty_and_flags_network_status():
     assert by_id[73]["in_network"] is False  # doctor 73 accepts no plans
 
 
+async def test_directory_narrows_by_location_when_it_matches():
+    async with await _client(directory_app) as client:
+        response = await client.get("/providers/search", params={"specialty": "Cardiology", "location": "Midtown"})
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["doctor_id"] == 12  # only the Midtown cardiologist
+
+
+async def test_directory_ignores_location_that_matches_nothing_instead_of_returning_empty():
+    """Regression test: a referral's `preferred_location` is caller-entered
+    free text (e.g. a real city like "Noida"), not one of this toy
+    directory's 3 canned locations ("Downtown"/"Midtown"/"Uptown"). Before
+    this fix, an unrecognized location silently zeroed out every candidate,
+    leaving a referral permanently stuck at awaiting_specialist_approval
+    with nothing for a coordinator/specialist to review or click."""
+    async with await _client(directory_app) as client:
+        response = await client.get(
+            "/providers/search", params={"specialty": "Cardiology", "location": "Noida"}
+        )
+    body = response.json()
+    assert len(body) == 2  # falls back to every Cardiology match, unfiltered by location
+    assert {p["doctor_id"] for p in body} == {12, 45}
+
+
 async def test_scheduling_availability_then_book_round_trip():
     async with await _client(scheduling_app) as client:
         availability = await client.get("/availability", params={"doctor_id": 88, "within_days": 7})

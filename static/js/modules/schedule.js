@@ -124,18 +124,31 @@ export async function render(container) {
   const addAvailBtn = el("button", { class: "btn-secondary btn-sm" }, "+ Add Availability");
   addAvailBtn.addEventListener("click", openAvailabilityForm);
 
-  container.appendChild(
-    el("div", { class: "card" }, [
-      el("div", { class: "card-header" }, [el("h2", {}, "Availability & Slot Generation")]),
-      el("p", { class: "muted" }, "Add a doctor's recurring weekly availability, then generate concrete bookable slots from it — safe to re-run, already-generated slots are skipped."),
-      el("div", { class: "toolbar" }, [
-        genDoctorSelect,
-        el("span", { class: "muted" }, "Days ahead:"), daysAheadInput,
-        genBtn, el("div", { class: "spacer" }), addAvailBtn,
-      ]),
-      genStatus,
-    ])
-  );
+  // Backend now gates POST /schedule/availability/ and /slots/generate
+  // behind appointment:manage (previously open to any authenticated user) —
+  // mirror that here so a patient session doesn't see controls the API
+  // would reject anyway.
+  if (hasPermission("appointment:manage")) {
+    container.appendChild(
+      el("div", { class: "card" }, [
+        el("div", { class: "card-header" }, [el("h2", {}, "Availability & Slot Generation")]),
+        el("p", { class: "muted" }, "Add a doctor's recurring weekly availability, then generate concrete bookable slots from it — safe to re-run, already-generated slots are skipped."),
+        el("div", { class: "toolbar" }, [
+          genDoctorSelect,
+          el("span", { class: "muted" }, "Days ahead:"), daysAheadInput,
+          genBtn, el("div", { class: "spacer" }), addAvailBtn,
+        ]),
+        genStatus,
+      ])
+    );
+  } else {
+    container.appendChild(
+      el("div", { class: "card" }, [
+        el("div", { class: "card-header" }, [el("h2", {}, "Availability & Slot Generation")]),
+        el("p", { class: "muted" }, "Only coordinators and PCPs can create availability or generate slots. You can still book yourself into an existing open slot below."),
+      ])
+    );
+  }
 
   // ---- Recommended-doctor booking flow ----
   const bookPatientSelect = el("select", { style: "max-width:260px;" });

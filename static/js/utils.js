@@ -45,6 +45,7 @@ const REFERRAL_STATUS_ROLE = {
   eligibility_denied: "critical",
   awaiting_specialist_approval: "warning",
   scheduling: "progress",
+  scheduling_delayed: "warning",
   scheduled: "good",
   completed: "good",
   cancelled: "neutral",
@@ -53,6 +54,70 @@ export function referralStatusBadgeClass(status) {
   return `badge badge-${REFERRAL_STATUS_ROLE[status] || "neutral"}`;
 }
 export const REFERRAL_STATUSES = Object.keys(REFERRAL_STATUS_ROLE);
+
+// Translates the raw workflow status into "what's happening / who it's
+// waiting on / what happens next" — the thing a status word alone doesn't
+// convey. Written generically (not patient-only) since every role benefits
+// from knowing whose court the ball is in. Mirrors the LangGraph workflow's
+// real steps (app/agents/graph.py) and who actually acts at each one
+// (see WORKFLOW.md's referral-lifecycle table).
+export const REFERRAL_PROGRESS_INFO = {
+  submitted: {
+    label: "Referral submitted",
+    waitingOn: "System",
+    nextStep: "Automated review of the referral and any attached documents is starting.",
+  },
+  intake_processing: {
+    label: "Reviewing documents",
+    waitingOn: "System",
+    nextStep: "Extracting diagnosis/procedure details from the uploaded documents.",
+  },
+  awaiting_documents: {
+    label: "Waiting on documents",
+    waitingOn: "Patient / referring doctor",
+    nextStep: "This referral has neither a reason nor any document yet — add a Reason or upload a document to continue.",
+  },
+  eligibility_checking: {
+    label: "Verifying insurance coverage",
+    waitingOn: "System",
+    nextStep: "Confirming the patient's insurance plan covers this referral.",
+  },
+  eligibility_denied: {
+    label: "Insurance verification did not pass",
+    waitingOn: "Care coordination staff",
+    nextStep: "A care coordinator needs to review this before it can move forward.",
+  },
+  awaiting_specialist_approval: {
+    label: "Selecting a specialist",
+    waitingOn: "Care coordination staff or a specialist",
+    nextStep: "A coordinator or specialist needs to review the recommended specialists and confirm one — see the Workflow State tab below.",
+  },
+  scheduling: {
+    label: "Booking the appointment",
+    waitingOn: "System",
+    nextStep: "Finding the next available appointment slot with the selected specialist.",
+  },
+  scheduling_delayed: {
+    label: "No appointment slot available yet",
+    waitingOn: "Care coordination staff",
+    nextStep: "A coordinator may need to consider an alternative specialist or timeframe.",
+  },
+  scheduled: {
+    label: "Appointment scheduled",
+    waitingOn: "Patient",
+    nextStep: "Attend the scheduled appointment.",
+  },
+  completed: {
+    label: "Referral completed",
+    waitingOn: "—",
+    nextStep: "The consult outcome has been recorded. Follow up with the referring doctor as advised.",
+  },
+  cancelled: {
+    label: "Referral cancelled",
+    waitingOn: "—",
+    nextStep: "Contact the care team if this looks unexpected.",
+  },
+};
 
 const APPOINTMENT_STATUS_ROLE = {
   scheduled: "progress",

@@ -10,8 +10,10 @@ from app.api.dependencies.pagination import build_page
 from app.models.patient import Patient
 from app.models.user import User
 from app.schemas.common import Page
-from app.schemas.patient import PatientCreate, PatientResponse, PatientUpdate
+from app.schemas.patient import PatientContextResponse, PatientCreate, PatientResponse, PatientUpdate
 from app.services.audit import log_action
+from app.services.insurance import random_policy
+from app.services.patient_context import gather_patient_context
 from app.services.record_scope import patient_visibility_filter
 
 router = APIRouter(prefix="/patients", tags=["patients"])
@@ -35,7 +37,19 @@ async def create_patient(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(require_permission("patient:manage")),
 ):
-    patient = Patient(**data.model_dump())
+    patient_data = data.model_dump()
+    # POC convenience: don't make insurance entry a manual step before a
+    # patient can be referred anywhere — a caller who left both fields blank
+    # gets a randomly assigned policy/payer plan (mirrors
+    # scripts/seed_sample_insurance.py's weighting), so eligibility checking
+    # always has something real to verify against. A caller who did supply
+    # their own values is left untouched.
+    if not patient_data.get("insurance_provider") and not patient_data.get("insurance_policy_number"):
+        policy_number, provider = random_policy()
+        patient_data["insurance_policy_number"] = policy_number
+        patient_data["insurance_provider"] = provider
+
+    patient = Patient(**patient_data)
     db.add(patient)
     await db.flush()
     await log_action(db, actor_id=current_user.id, action="patient.create", resource_type="patient", resource_id=patient.id)
@@ -68,6 +82,22 @@ async def get_patient(
     current_user: User = Depends(get_current_active_user),
 ):
     return await _get_scoped_patient(db, current_user, patient_id)
+
+
+@router.get("/{patient_id}/context", response_model=PatientContextResponse)
+async def get_patient_context(
+    patient_id: int,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Aggregates everything about this patient the caller is already allowed
+    to see (appointments, medical records, referrals, insurance, derived care
+    team) into one payload — the platform's answer to "once a patient is
+    created it should already be available to all [roles that have a reason
+    to see it]" instead of everyone hand-navigating four separate pages. Never
+    broader than assembling the same four GETs by hand: every sub-list reuses
+    that resource's own visibility filter."""
+    return await gather_patient_context(db, current_user, patient_id)
 
 
 @router.put("/{patient_id}", response_model=PatientResponse)

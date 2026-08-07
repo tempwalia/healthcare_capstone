@@ -32,6 +32,10 @@ export async function render(container) {
   });
   statTile(tiles, { label: "Eligibility denial rate", value: `${(summary.eligibility_denial_rate * 100).toFixed(1)}%` });
   body.appendChild(tiles);
+  body.appendChild(
+    el("p", { class: "muted", style: "font-size:11.5px;margin:8px 0 16px;" },
+      "\"Avg. time to schedule\" includes every referral that ever reached \"scheduled\", not just ones currently sitting in that status.")
+  );
 
   const statusData = REFERRAL_STATUSES.filter((s) => summary.by_status[s]).map((s) => ({
     status: capitalize(s),

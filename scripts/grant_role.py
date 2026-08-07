@@ -5,7 +5,7 @@ role to an already-registered user directly.
     uv run python scripts/grant_role.py <username> <role_name>
 
 Valid role_name values: patient, pcp, specialist, care_coordinator,
-payer_admin, admin (see app/core/seed.py's ROLE_PERMISSIONS).
+payer_admin, doctor, admin (see app/core/seed.py's ROLE_PERMISSIONS).
 """
 import asyncio
 import sys

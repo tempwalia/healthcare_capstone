@@ -1,0 +1,21 @@
+REFERRAL LETTER
+
+From: Dr. Jane Whitfield, Family Medicine, Riverside Primary Care
+To: Orthopedics Department
+
+Re: Referral for evaluation of chronic lower back pain
+
+Patient has a 4-month history of persistent lower back pain radiating into
+the left leg, worsening with prolonged sitting and forward flexion. Symptoms
+have not improved with NSAIDs, physical therapy, or activity modification.
+
+Diagnosis: M54.5 - Low back pain
+Secondary diagnosis: M51.26 - Other intervertebral disc displacement, lumbar region
+
+Requested procedure: 72148 - MRI lumbar spine without contrast
+
+No red-flag symptoms (no bowel/bladder dysfunction, no saddle anesthesia,
+no significant weakness). Requesting orthopedic evaluation and consideration
+of imaging-guided treatment plan.
+
+Thank you for seeing this patient.

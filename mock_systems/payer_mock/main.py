@@ -14,6 +14,8 @@ app = FastAPI(title="Mock Payer / Eligibility System", description="Stand-in for
 PLANS = {
     "ACME-991123": {"plan": "Acme PPO Gold", "network_doctor_ids": [88, 91, 12], "copay_usd": 40},
     "ACME-778890": {"plan": "Acme HMO Silver", "network_doctor_ids": [12, 45], "copay_usd": 25},
+    "HORIZON-556677": {"plan": "Horizon Blue PPO", "network_doctor_ids": [67, 73], "copay_usd": 30},
+    "UNITEDCARE-334455": {"plan": "UnitedCare Basic HMO", "network_doctor_ids": [45, 12], "copay_usd": 55},
 }
 
 # Procedure code prefixes that require prior authorization under these plans —

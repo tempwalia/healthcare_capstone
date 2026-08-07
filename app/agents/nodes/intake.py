@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+import random
 import re
 from pathlib import Path
 from typing import List, Set
@@ -8,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.agents.llm import StubChatModel, get_chat_model
+from app.agents.nodes.specialist import _SPECIALTY_KEYWORDS
 from app.agents.state import ReferralState
 from app.database import session as db_session
 from app.events.outbox import write_outbox_event
@@ -23,6 +26,38 @@ _DOC_TYPE_KEYWORDS = {
         "mri", "x-ray", "xray", "imaging", "lab", "labs", "scan", "ultrasound", "radiology", "ct ",
     ),
 }
+
+# POC convenience: a referral's own free-text `reason` is available the
+# instant this node runs (it's submitted with the referral itself, unlike
+# uploaded documents — see specialist.py's infer_specialty docstring for the
+# same observation), so it's treated as an equally valid substitute for
+# uploaded documents rather than a hard blocker on both document *types*
+# being present. If neither reason nor any document exists yet, one of these
+# sample referral-letter/report pairs is auto-attached (clearly labeled) so
+# the workflow always has something to extract from and never dead-ends
+# waiting on a real upload that may never come in a demo/POC setting.
+SAMPLE_DOCUMENTS_DIR = Path(__file__).resolve().parents[3] / "sample_documents"
+_SAMPLE_DOCUMENT_PAIRS_BY_SPECIALTY = {
+    "Orthopedics": ("orthopedics_referral_letter.txt", "orthopedics_mri_imaging_report.txt"),
+    "Cardiology": ("cardiology_referral_letter.txt", "cardiology_lab_results.txt"),
+    "Dermatology": ("dermatology_referral_letter.txt", "dermatology_skin_scan_report.txt"),
+}
+_SAMPLE_DOCUMENT_PAIRS = list(_SAMPLE_DOCUMENT_PAIRS_BY_SPECIALTY.values())
+
+
+def _pick_sample_document_pair(reason: str) -> tuple:
+    """Prefer the pair matching the reason's specialty keyword (so the
+    auto-attached codes don't contradict what the referral is actually
+    about, and specialist recommendation/analytics stay coherent); fall back
+    to any of the 3 at random when the reason is blank or unrecognized —
+    "randomly assigned" per the original ask, just not at the cost of
+    picking a pair that fights the reason text when one is given."""
+    text = (reason or "").lower()
+    for specialty, keywords in _SPECIALTY_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            return _SAMPLE_DOCUMENT_PAIRS_BY_SPECIALTY[specialty]
+    return random.choice(_SAMPLE_DOCUMENT_PAIRS)
+
 
 # ICD-10: a letter (excluding U), two digits, optionally a decimal point and
 # up to 4 more alphanumeric characters (e.g. M51.26). CPT: plain 5-digit
@@ -86,14 +121,52 @@ def regex_extract_cpt(text: str) -> List[str]:
     return sorted(set(_CPT_PATTERN.findall(text)))
 
 
+async def _auto_attach_sample_documents(db, referral: ReferralRequest) -> List[ReferralDocument]:
+    """POC convenience: a referral with no real upload shouldn't dead-end at
+    `awaiting_documents` waiting on a file that may never come. Picks a
+    sample referral-letter/report pair matching the reason's specialty when
+    recognizable, otherwise a random one (filename prefixed so it's
+    obviously an auto-attached placeholder in the UI, not a real upload) so
+    extraction always has real text — and a real ICD-10/CPT signal for
+    specialty routing — to work with."""
+    letter_name, report_name = _pick_sample_document_pair(referral.reason)
+    attached: List[ReferralDocument] = []
+    for name in (letter_name, report_name):
+        src = SAMPLE_DOCUMENTS_DIR / name
+        if not src.exists():
+            continue
+        doc = ReferralDocument(
+            referral_request_id=referral.id,
+            filename=f"[auto-sample] {name}",
+            storage_path=str(src),
+            extraction_status="queued",
+        )
+        db.add(doc)
+        attached.append(doc)
+    if attached:
+        await db.flush()
+    return attached
+
+
 async def intake_node(state: ReferralState) -> dict:
     async with db_session.async_session() as db:
+        referral = await db.get(ReferralRequest, state["referral_id"])
         docs = (
             await db.execute(
                 select(ReferralDocument).where(ReferralDocument.referral_request_id == state["referral_id"])
             )
         ).scalars().all()
-        text = "\n".join(t for t in (extract_document_text(d.storage_path) for d in docs) if t)
+
+        has_reason = bool((referral.reason or "").strip())
+        if not docs:
+            docs = await _auto_attach_sample_documents(db, referral)
+
+        # pypdf's page-by-page parsing is CPU-bound and was previously run
+        # inline on the event loop, one document at a time — for a real PDF
+        # that stalls every other concurrent request/background task. Now
+        # off-loaded to a thread and run concurrently across documents.
+        texts = await asyncio.gather(*(asyncio.to_thread(extract_document_text, d.storage_path) for d in docs))
+        text = "\n".join(t for t in texts if t)
 
         llm = get_chat_model("code_extraction")
         if isinstance(llm, StubChatModel):
@@ -111,12 +184,17 @@ async def intake_node(state: ReferralState) -> dict:
                 procedure_codes = regex_extract_cpt(text)
 
         present_types = infer_document_types(docs)
-        missing = sorted(REQUIRED_DOC_TYPES - present_types)
+        missing_types = sorted(REQUIRED_DOC_TYPES - present_types)
+        # A referral only *blocks* on documents if it has neither any
+        # document nor its own reason text — one uploaded document (of
+        # either type) or a filled-in reason is enough to move forward.
+        # `missing_types` below is now purely an informational "these types
+        # would help" hint on the response, not a gate (see route_after_intake).
+        can_proceed = bool(docs) or has_reason
 
-        referral = await db.get(ReferralRequest, state["referral_id"])
         referral.status = (
-            ReferralWorkflowStatus.AWAITING_DOCUMENTS.value if missing
-            else ReferralWorkflowStatus.ELIGIBILITY_CHECKING.value
+            ReferralWorkflowStatus.ELIGIBILITY_CHECKING.value if can_proceed
+            else ReferralWorkflowStatus.AWAITING_DOCUMENTS.value
         )
         for d in docs:
             d.extraction_status = "complete"
@@ -132,6 +210,6 @@ async def intake_node(state: ReferralState) -> dict:
         return {
             "diagnosis_codes": diagnosis_codes,
             "procedure_codes": procedure_codes,
-            "missing_documents": missing,
+            "missing_documents": [] if can_proceed else missing_types,
             "status": referral.status,
         }

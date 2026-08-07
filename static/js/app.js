@@ -3,6 +3,7 @@ import { createRouter, navigate } from "./router.js";
 import { el } from "./utils.js";
 import * as authModule from "./modules/auth.js";
 import patientsModule from "./modules/patients.js";
+import * as patientDetailModule from "./modules/patient_detail.js";
 import doctorsModule from "./modules/doctors.js";
 import appointmentsModule from "./modules/appointments.js";
 import medicalRecordsModule from "./modules/medical_records.js";
@@ -12,6 +13,7 @@ import * as analyticsModule from "./modules/analytics.js";
 import * as auditModule from "./modules/audit.js";
 import * as assistantModule from "./modules/assistant.js";
 import * as adminModule from "./modules/admin.js";
+import { mountNotificationBell } from "./components/notifications.js";
 
 const NAV_ITEMS = [
   { path: "/patients", label: "Patients", icon: "🧑" },
@@ -94,14 +96,26 @@ function renderUserCard() {
   userCard.appendChild(logoutBtn);
 }
 
+// Two persistent children so a route change (which only needs to update the
+// title) doesn't wipe out the notification bell mounted alongside it.
+const topbarTitleHost = el("div", {});
+const topbarActionsHost = el("div", { class: "topbar-actions" });
+topbar.appendChild(topbarTitleHost);
+topbar.appendChild(topbarActionsHost);
+const notificationBell = mountNotificationBell(topbarActionsHost);
+
 function setTopbarTitle(title) {
-  topbar.innerHTML = "";
-  topbar.appendChild(el("h1", {}, title));
+  topbarTitleHost.innerHTML = "";
+  topbarTitleHost.appendChild(el("h1", {}, title));
 }
 
 subscribe(() => {
   renderNav();
   renderUserCard();
+  // Same state-change pub/sub login already notifies through (setTokens/
+  // setMe) — closes the gap where the bell would otherwise wait up to 30s
+  // after login for its first authenticated poll.
+  notificationBell.refresh();
 });
 
 function guarded(title, renderFn) {
@@ -131,6 +145,7 @@ router.add("/login", authRoute("login"));
 router.add("/register", authRoute("register"));
 router.add("/", guarded("Patients", patientsModule.render));
 router.add("/patients", guarded("Patients", patientsModule.render));
+router.add("/patients/:id", guarded("Patient", patientDetailModule.render));
 router.add("/doctors", guarded("Doctors", doctorsModule.render));
 router.add("/appointments", guarded("Appointments", appointmentsModule.render));
 router.add("/medical-records", guarded("Medical Records", medicalRecordsModule.render));

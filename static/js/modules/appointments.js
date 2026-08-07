@@ -1,5 +1,54 @@
+import { api } from "../api.js";
+import { openModal } from "../components/modal.js";
+import { toast } from "../components/toast.js";
 import { createResourceModule } from "../resource.js";
-import { formatDateTime, appointmentStatusBadgeClass, capitalize, APPOINTMENT_STATUSES } from "../utils.js";
+import { hasPermission } from "../state.js";
+import { el, formatDateTime, appointmentStatusBadgeClass, capitalize, APPOINTMENT_STATUSES } from "../utils.js";
+
+const NON_RESCHEDULABLE_STATUSES = ["completed", "cancelled", "no_show"];
+
+// Patients hold appointment:view_own but not appointment:manage, so the
+// generic edit/delete actions below never render for them — every row a
+// patient session sees is already their own appointment (that's what
+// appointment:view_own scopes to), so no extra ownership check is needed
+// here, just the permission split itself.
+function selfServiceActions(row, reload) {
+  if (hasPermission("appointment:manage") || !hasPermission("appointment:view_own")) return [];
+  if (NON_RESCHEDULABLE_STATUSES.includes(row.status)) return [];
+
+  const buttons = [];
+
+  const rescheduleBtn = el("button", { class: "btn-ghost btn-sm btn-icon", title: "Reschedule" }, "🕓");
+  rescheduleBtn.addEventListener("click", () => {
+    openModal({
+      title: `Reschedule Appointment #${row.id}`,
+      submitLabel: "Save",
+      fields: [{ name: "appointment_datetime", label: "New Date & Time", type: "datetime", required: true }],
+      initial: row,
+      onSubmit: async (payload) => {
+        await api.put(`/appointments/${row.id}`, { appointment_datetime: payload.appointment_datetime });
+        toast("Appointment rescheduled.", "success");
+        await reload();
+      },
+    });
+  });
+  buttons.push(rescheduleBtn);
+
+  const cancelBtn = el("button", { class: "btn-ghost btn-sm btn-icon", title: "Cancel appointment" }, "✕");
+  cancelBtn.addEventListener("click", async () => {
+    if (!confirm("Cancel this appointment?")) return;
+    try {
+      await api.put(`/appointments/${row.id}`, { status: "cancelled" });
+      toast("Appointment cancelled.", "success");
+      await reload();
+    } catch (err) {
+      toast(err.message || "Cancel failed.", "error");
+    }
+  });
+  buttons.push(cancelBtn);
+
+  return buttons;
+}
 
 const baseFields = [
   {
@@ -42,4 +91,5 @@ export default createResourceModule({
     ...baseFields,
     { name: "status", label: "Status", type: "select", options: APPOINTMENT_STATUSES, numeric: false },
   ],
+  extraActions: selfServiceActions,
 });

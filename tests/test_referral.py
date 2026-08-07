@@ -58,19 +58,28 @@ async def test_submit_referral_requires_referral_create_permission(
     assert response.status_code == 403
 
 
-async def test_submit_referral_pauses_for_documents_then_denies_eligibility(
+async def test_submit_referral_with_reason_proceeds_past_intake_without_documents(
     test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
 ):
-    """No documents are uploaded at submit time (they can't be — the
+    """POC behavior: a filled-in Reason is sufficient on its own — the
+    referral must not sit waiting on document uploads a patient may never
+    provide. No documents are uploaded at submit time (they can't be — the
     background workflow starts the instant the referral exists, before a
-    separate upload call could possibly happen), so the real workflow pauses
-    at `awaiting_documents` first; uploading the two required document types
-    unblocks it. `test_patient_data` has no `insurance_policy_number` on
-    file, so it then denies eligibility. Full happy-path coverage (eligible
-    patient, specialist approval pause, resume, scheduling) lives in
-    test_referral_workflow_agents.py."""
+    separate upload call could possibly happen); `intake_node` auto-attaches
+    a random sample referral-letter/report pair when none exist yet, so the
+    workflow proceeds straight to eligibility checking instead of pausing at
+    `awaiting_documents`. An explicit unrecognized policy number keeps the
+    eligibility outcome deterministic (patient creation now auto-assigns a
+    random demo policy when left blank — see app/services/insurance.py, and
+    would otherwise make this test's outcome a coin flip). Full happy-path
+    coverage (eligible patient, specialist approval pause, resume,
+    scheduling) lives in test_referral_workflow_agents.py."""
     await _grant_role(test_session, test_user_data["username"], "pcp")
-    patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
+    patient = (await test_client.post(
+        "/patients/",
+        json={**test_patient_data, "insurance_policy_number": "NOT-A-REAL-PLAN"},
+        headers=auth_headers,
+    )).json()
     doctor = (await test_client.post("/doctors/", json=test_doctor_data, headers=auth_headers)).json()
     await _link_doctor_to_user(test_session, doctor["id"], test_user_data["username"])
 
@@ -90,21 +99,46 @@ async def test_submit_referral_pauses_for_documents_then_denies_eligibility(
     assert created["workflow_thread_id"] == f"referral-{created['id']}"
 
     fetched = await test_client.get(f"/referral/requests/{created['id']}", headers=auth_headers)
-    assert fetched.json()["status"] == "awaiting_documents"
+    assert fetched.json()["status"] == "eligibility_denied"
 
-    await test_client.post(
-        f"/referral/requests/{created['id']}/documents", headers=auth_headers,
-        files={"file": ("referral_letter.txt", b"Referral letter body.", "text/plain")},
-    )
-    still_missing_imaging = await test_client.get(f"/referral/requests/{created['id']}", headers=auth_headers)
-    assert still_missing_imaging.json()["status"] == "awaiting_documents"
+    # Never uploaded anything ourselves — these came from intake_node's
+    # auto-sample fallback, clearly labeled so it's obvious in the UI too.
+    documents = (
+        await test_client.get(f"/referral/requests/{created['id']}/documents", headers=auth_headers)
+    ).json()
+    assert len(documents) == 2
+    assert all(d["filename"].startswith("[auto-sample]") for d in documents)
 
-    await test_client.post(
-        f"/referral/requests/{created['id']}/documents", headers=auth_headers,
-        files={"file": ("mri_report.txt", b"MRI imaging report body.", "text/plain")},
+
+async def test_submit_referral_with_no_reason_and_no_documents_still_proceeds(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
+):
+    """Even a referral with a blank reason and no uploaded documents must not
+    dead-end: intake_node's auto-sample fallback gives it something real to
+    extract from either way, so it still proceeds past `awaiting_documents`."""
+    await _grant_role(test_session, test_user_data["username"], "pcp")
+    patient = (await test_client.post(
+        "/patients/",
+        json={**test_patient_data, "insurance_policy_number": "NOT-A-REAL-PLAN"},
+        headers=auth_headers,
+    )).json()
+    doctor = (await test_client.post("/doctors/", json=test_doctor_data, headers=auth_headers)).json()
+    await _link_doctor_to_user(test_session, doctor["id"], test_user_data["username"])
+
+    response = await test_client.post(
+        "/referral/requests/",
+        json={
+            "patient_id": patient["id"],
+            "referring_doctor_id": doctor["id"],
+            "request_date": "2026-08-06",
+        },
+        headers=auth_headers,
     )
-    fully_uploaded = await test_client.get(f"/referral/requests/{created['id']}", headers=auth_headers)
-    assert fully_uploaded.json()["status"] == "eligibility_denied"
+    assert response.status_code == 202
+    created = response.json()
+
+    fetched = await test_client.get(f"/referral/requests/{created['id']}", headers=auth_headers)
+    assert fetched.json()["status"] != "awaiting_documents"
 
 
 async def test_submit_referral_rejects_unknown_patient(
@@ -196,6 +230,12 @@ async def test_upload_and_list_referral_document(
     assert upload.status_code == 202
     assert upload.json()["extraction_status"] == "queued"
 
-    listed = await test_client.get(f"/referral/requests/{referral['id']}/documents", headers=auth_headers)
-    assert len(listed.json()) == 1
-    assert listed.json()[0]["filename"] == "referral_letter.txt"
+    # This referral was submitted with neither a reason nor a document, so
+    # intake_node had already auto-attached a random sample document pair
+    # (filenames prefixed "[auto-sample]") by the time this upload landed —
+    # 2 auto-attached + the 1 uploaded here.
+    listed = (await test_client.get(f"/referral/requests/{referral['id']}/documents", headers=auth_headers)).json()
+    assert len(listed) == 3
+    own_upload = next(d for d in listed if d["filename"] == "referral_letter.txt")
+    assert own_upload is not None
+    assert sum(1 for d in listed if d["filename"].startswith("[auto-sample]")) == 2

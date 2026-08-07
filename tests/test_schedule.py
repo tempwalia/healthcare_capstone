@@ -1,6 +1,7 @@
 from httpx import AsyncClient
 
-from tests.test_referral import _grant_role
+from tests.test_record_scope import _reset_roles
+from tests.test_referral import _grant_role, _link_patient_to_user
 
 
 async def _create_doctor(test_client, headers, test_doctor_data):
@@ -90,6 +91,50 @@ async def test_book_slot_creates_appointment_and_marks_slot_booked(
         "/schedule/slots/", params={"doctor_id": doctor["id"], "is_booked": False}, headers=auth_headers
     )).json()
     assert all(s["id"] != slot_id for s in remaining["items"])
+
+
+async def test_bare_patient_role_cannot_create_availability_or_generate_slots_but_can_book(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data, test_patient_data
+):
+    """Workstream F-1: /schedule/availability/ and /schedule/slots/generate
+    previously had no permission check at all — any authenticated user,
+    including a bare `patient`, could call them. Now gated behind
+    appointment:manage (staff-only). /schedule/slots/{id}/book stays open —
+    that's the patient self-service "Book an Appointment" flow."""
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    doctor = await _create_doctor(test_client, auth_headers, test_doctor_data)
+    patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
+    await test_client.post(
+        "/schedule/availability/",
+        json={"doctor_id": doctor["id"], "weekday": 0, "start_time": "09:00", "end_time": "10:00", "slot_minutes": 30},
+        headers=auth_headers,
+    )
+    slots = (await test_client.post(
+        "/schedule/slots/generate", json={"doctor_id": doctor["id"], "days_ahead": 14}, headers=auth_headers
+    )).json()
+
+    await _reset_roles(test_session, test_user_data["username"])
+    await _grant_role(test_session, test_user_data["username"], "patient")
+    await _link_patient_to_user(test_session, patient["id"], test_user_data["username"])
+
+    denied_availability = await test_client.post(
+        "/schedule/availability/",
+        json={"doctor_id": doctor["id"], "weekday": 1, "start_time": "09:00", "end_time": "10:00"},
+        headers=auth_headers,
+    )
+    assert denied_availability.status_code == 403
+
+    denied_generate = await test_client.post(
+        "/schedule/slots/generate", json={"doctor_id": doctor["id"], "days_ahead": 14}, headers=auth_headers,
+    )
+    assert denied_generate.status_code == 403
+
+    allowed_book = await test_client.post(
+        f"/schedule/slots/{slots[0]['id']}/book",
+        json={"patient_id": patient["id"], "reason": "Follow-up"},
+        headers=auth_headers,
+    )
+    assert allowed_book.status_code == 201
 
 
 async def test_generate_slots_for_doctor_without_availability_returns_empty(

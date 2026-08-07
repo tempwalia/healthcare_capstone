@@ -1,0 +1,21 @@
+LABORATORY REPORT
+
+Ordered in support of cardiology referral (I25.10 - atherosclerotic heart
+disease, without angina pectoris).
+
+Test: 93010 - Electrocardiogram, interpretation and report
+Result: Normal sinus rhythm, rate 78 bpm. No ST-segment changes. No acute
+ischemic changes noted.
+
+Lipid Panel:
+- Total cholesterol: 214 mg/dL (borderline high)
+- LDL: 138 mg/dL (borderline high)
+- HDL: 42 mg/dL
+- Triglycerides: 165 mg/dL
+
+Troponin I: within normal limits.
+
+Impression: Borderline dyslipidemia; no acute cardiac event indicated by
+current labs. Recommend cardiology evaluation given symptom history
+(I20.9 - angina pectoris, unspecified) and family history of coronary
+artery disease.

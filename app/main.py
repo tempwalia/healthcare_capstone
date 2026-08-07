@@ -18,6 +18,7 @@ from app.api.routes import (
     doctors,
     health,
     medical_records,
+    notifications,
     patients,
     referral,
     schedule,
@@ -78,6 +79,7 @@ app.include_router(referral.router)
 app.include_router(schedule.router)
 app.include_router(analytics.router)
 app.include_router(admin.router)
+app.include_router(notifications.router)
 app.include_router(ai_referral_workflow.router)
 app.include_router(ai_assistant.router)
 

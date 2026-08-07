@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies.auth import get_current_active_user
+from app.api.dependencies.auth import get_current_active_user, require_permission
 from app.api.dependencies.database import get_async_session
 from app.api.dependencies.pagination import build_page
 from app.core.time_utils import ensure_aware
@@ -32,7 +32,7 @@ router = APIRouter(prefix="/schedule", tags=["schedule"])
 async def create_availability(
     data: DoctorAvailabilityCreate,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("appointment:manage")),
 ):
     if not (await db.execute(select(Doctor).where(Doctor.id == data.doctor_id, Doctor.deleted_at.is_(None)))).scalar_one_or_none():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Doctor not found")
@@ -117,7 +117,7 @@ async def _generate_slots(db: AsyncSession, doctor_id: int, days_ahead: int) -> 
 async def generate_slots(
     data: GenerateSlotsRequest,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(require_permission("appointment:manage")),
 ):
     """Materializes concrete ScheduleSlot rows from a doctor's recurring
     DoctorAvailability windows — idempotent (skips any slot start time that

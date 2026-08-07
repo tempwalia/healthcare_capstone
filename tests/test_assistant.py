@@ -56,3 +56,16 @@ def test_patient_tool_allowlist_excludes_unscoped_routes():
         assert "list_appointments" not in tools, role
         assert "get_medical_record" not in tools, role
         assert "get_doctor" not in tools, role
+
+
+def test_only_care_coordinator_gets_the_timeline_and_analytics_tools():
+    """Both routes are exactly as scoped as tools every role already has
+    (get_referral_timeline shares get_referral's visibility gate;
+    get_referral_analytics_summary needs analytics:view, which only
+    care_coordinator holds among the roles in this allowlist) — added here
+    specifically, not to BASE_REFERRAL_TOOLS, per the de-siloing pass."""
+    assert "get_referral_timeline" in ROLE_TOOL_ALLOWLIST["care_coordinator"]
+    assert "get_referral_analytics_summary" in ROLE_TOOL_ALLOWLIST["care_coordinator"]
+    for role in ("patient", "pcp", "specialist"):
+        assert "get_referral_timeline" not in ROLE_TOOL_ALLOWLIST[role]
+        assert "get_referral_analytics_summary" not in ROLE_TOOL_ALLOWLIST[role]

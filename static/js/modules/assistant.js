@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { getState } from "../state.js";
 import { el } from "../utils.js";
 
 function sessionId() {
@@ -10,9 +11,30 @@ function sessionId() {
   return id;
 }
 
+// Mirrors app/agents/assistant_graph.py's resolve_role_for_tools precedence
+// exactly (care_coordinator > specialist > pcp > patient) so these
+// suggestion chips only ever appear for a role the backend would actually
+// hand the matching tools to — not just "any role with the right permission
+// name", which could also include payer_admin (has analytics:view too, but
+// isn't in the backend's precedence list and silently falls back to
+// patient-level tools there — a separate, pre-existing gap, not touched here).
+const _ROLE_PRECEDENCE = ["care_coordinator", "specialist", "pcp", "patient"];
+function resolveRoleForTools(roles) {
+  for (const role of _ROLE_PRECEDENCE) {
+    if (roles.includes(role)) return role;
+  }
+  return "patient";
+}
+
+const COORDINATOR_SUGGESTIONS = [
+  "Give me the referral funnel summary",
+  "Show me referral #1's timeline",
+];
+
 export async function render(container) {
   container.innerHTML = "";
   const chatWindow = el("div", { class: "chat-window" });
+  const suggestionsHost = el("div", { class: "chip-row", style: "margin-bottom:10px;" });
   const input = el("input", { type: "text", placeholder: "Ask about a referral, document upload, scheduling…" });
   const sendBtn = el("button", { class: "btn-primary" }, "Send");
 
@@ -20,6 +42,7 @@ export async function render(container) {
     el("div", { class: "card" }, [
       el("div", { class: "card-header" }, [el("h2", {}, "Assistant")]),
       chatWindow,
+      suggestionsHost,
       el("div", { class: "chat-input-row" }, [input, sendBtn]),
     ])
   );
@@ -30,6 +53,18 @@ export async function render(container) {
   }
 
   appendMessage("assistant", "Hi! Ask me about referral status, document uploads, scheduling, or consult outcomes.");
+
+  const { me } = getState();
+  if (me && resolveRoleForTools(me.roles) === "care_coordinator") {
+    for (const suggestion of COORDINATOR_SUGGESTIONS) {
+      const chip = el("button", { class: "chip", style: "cursor:pointer;" }, suggestion);
+      chip.addEventListener("click", () => {
+        input.value = suggestion;
+        send();
+      });
+      suggestionsHost.appendChild(chip);
+    }
+  }
 
   async function send() {
     const text = input.value.trim();

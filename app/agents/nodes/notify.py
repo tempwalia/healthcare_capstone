@@ -5,6 +5,7 @@ from app.database import session as db_session
 from app.models.patient import Patient
 from app.models.referral import ReferralRequest
 from app.services.audit import log_action
+from app.services.notifications import create_notification
 
 
 async def notify_node(state: ReferralState) -> dict:
@@ -26,13 +27,17 @@ async def notify_node(state: ReferralState) -> dict:
         tools = await mcp_clients.get_tools(mcp_clients.NOTIFICATION_SERVERS, ["send_notification"])
         appointment = state.get("appointment") or {}
         scheduled_for = appointment.get("scheduled_for", "a time to be confirmed")
+        message = f"Your referral appointment is confirmed for {scheduled_for}."
         await call_tool_audited(
             db, referral_id=referral.id, tool=tools["send_notification"],
-            args={
-                "user_id": patient.user_id,
-                "channel": "email",
-                "message": f"Your referral appointment is confirmed for {scheduled_for}.",
-            },
+            args={"user_id": patient.user_id, "channel": "email", "message": message},
+        )
+        # Real, in-app, persisted notification the dashboard's bell icon
+        # actually reads — separate from the call above, which only reaches
+        # the mock external email/SMS/push provider and persists nothing.
+        await create_notification(
+            db, user_id=patient.user_id, title="Referral appointment scheduled",
+            body=message, referral_id=referral.id,
         )
         await db.commit()
 
