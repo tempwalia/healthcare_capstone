@@ -1,7 +1,7 @@
 # Intelligent Care Coordination & Referral Management Platform
 
-An end-to-end, AI-agentic referral management platform built for the Architect Academy capstone
-problem statement (`problem_statemnet.txt`): patients referred by primary care providers to
+An end-to-end, AI-agentic referral management platform built for the capstone
+problem statement : patients referred by primary care providers to
 specialists face delays from disconnected systems, incomplete clinical information, manual
 insurance checks, and inefficient scheduling. This platform orchestrates the entire referral
 journey — submission, document intake, eligibility verification, specialist recommendation,
