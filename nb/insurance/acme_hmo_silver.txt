@@ -1,0 +1,27 @@
+TITLE: Acme HMO Silver
+CATEGORY: Insurance Plan
+POLICY NUMBER FORMAT: ACME-778890
+PLAN TYPE: HMO (Health Maintenance Organization)
+
+COVERAGE SUMMARY
+Acme HMO Silver is Acme's lower-cost, narrower-network plan on this platform, with 2 in-network
+doctors in the provider directory today.
+
+COST TO THE PATIENT
+Estimated copay: $25 per specialist visit under this plan — the lowest copay of the four plans on
+this platform.
+
+PRIOR AUTHORIZATION
+Like every plan on this platform, referrals involving spine-related diagnosis codes (ICD-10 M51 or
+M54 — see `prior_authorization_policy.txt`) require prior authorization under this plan.
+
+WHEN VERIFICATION FAILS
+If a policy number doesn't match this plan's expected format, or the plan can't be recognized at
+all, eligibility verification returns as not verified and the referral pauses for a care
+coordinator to review.
+
+HOW TO COMPARE THIS PLAN
+Acme HMO Silver has the lowest copay of the four plans on this platform, but the narrowest network
+alongside Horizon Blue PPO (2 in-network doctors each). It shares one in-network doctor with Acme
+PPO Gold and one with UnitedCare Basic HMO — a patient choosing between HMO Silver and PPO Gold is
+mainly trading a lower copay for a smaller specialist pool.

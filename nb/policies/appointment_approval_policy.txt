@@ -1,0 +1,39 @@
+TITLE: How Specialist Appointments Get Approved and Booked
+CATEGORY: Scheduling & Appointments
+AUDIENCE: Patients, care coordinators, specialists
+
+SPECIALIST APPROVAL
+A specialist recommendation is never auto-booked. When a referral reaches the "Selecting a
+specialist" stage, the platform presents a ranked list of candidates, each with a stated reason
+(in-network status, distance, rating, next available slot). A care coordinator or the assigned
+specialist must explicitly confirm a candidate before booking proceeds. This is a deliberate
+human-in-the-loop control, not a missing feature — a specialist match that looks correct on paper
+(insurance, distance, rating) can still be wrong for reasons the platform can't see (a scheduling
+conflict, a patient preference expressed outside the system, a clinical nuance), so a person
+always has the final say.
+
+If the referring doctor or patient already has a specific specialist in mind, that preference can
+be recorded on the referral up front — the platform skips the recommendation step entirely and
+goes straight to booking with that specialist once eligibility is confirmed.
+
+APPOINTMENT BOOKING
+Once a specialist is confirmed, the platform books the next available slot with that doctor
+automatically, based on the doctor's posted availability. Appointments can also be booked directly
+by a patient without going through a referral at all, for a doctor's open self-service slots.
+
+WAIT-TIME TARGETS
+Every referral has a target wait time in days (14 days if none is specified). If no slot is
+available with the confirmed specialist inside that window, the referral is flagged for a care
+coordinator to review — the usual next step is considering an alternative specialist or a
+different timeframe, not leaving the patient waiting indefinitely.
+
+RESCHEDULING AND CANCELLATION
+An appointment can be cancelled by the patient, the assigned doctor, or care coordination staff.
+Cancelling does not delete the referral itself — a cancelled appointment can be rebooked without
+starting the referral process over from the beginning.
+
+AFTER THE APPOINTMENT
+Once the appointment has happened, the treating doctor (or a care coordinator relaying the visit
+on the doctor's behalf) records the consult outcome directly on the appointment or referral. This
+closes the loop: the patient, referring doctor, and care team can all see the recorded outcome and
+the generated care-journey summary afterward.

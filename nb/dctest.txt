@@ -1,0 +1,16 @@
+1. Stop Docker:
+
+
+docker compose down
+This stops both containers and frees port 8000. Use plain docker compose down (not -v) so you keep the Postgres volume — no data loss, just stopped.
+
+2. Confirm the port is actually free:
+
+
+netstat -ano | grep ":8000.*LISTENING"
+Should return nothing. If something's still there, it's not the Docker container (that's now stopped) — check what it is before proceeding.
+
+3. Run locally (your existing local Postgres at localhost:5432 is what .env's DATABASE_URL already points to, so no config changes needed):
+
+
+uv run uvicorn app.main:app --reload --loop app.core.event_loop:selector_event_loop_factory --port 8000

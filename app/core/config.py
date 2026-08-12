@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     # as mock_base_url above.
     api_base_url: str = "http://127.0.0.1:8000"
 
+    # The local policy knowledge base's MCP server (app.mount("/kb", ...) in
+    # app/main.py) — same in-process-but-real-loopback-HTTP reasoning as
+    # mock_base_url/api_base_url above, kept as its own setting rather than
+    # reusing one of those so it can point elsewhere without conflating "the
+    # mocked external systems" or "this app's own authenticated API" with
+    # "first-party public reference content."
+    kb_base_url: str = "http://127.0.0.1:8000"
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     @property

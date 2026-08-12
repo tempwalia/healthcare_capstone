@@ -1,0 +1,62 @@
+TITLE: How a Referral Works, Start to Finish
+CATEGORY: Referral Process
+AUDIENCE: Patients, primary care providers, specialists, care coordinators
+
+This guide explains what happens after a referral is submitted on the Intelligent Care
+Coordination platform, in plain language, stage by stage. Every stage below matches a real
+status you will see on the referral's detail page.
+
+1. SUBMITTED
+   The referral has been created — a primary care provider (or the patient themselves, or a care
+   coordinator on their behalf) has recorded the reason for the referral, the requesting doctor,
+   and optionally a preferred specialist or location. The platform takes over automatically from
+   here; nobody needs to "process" it by hand.
+
+2. REVIEWING DOCUMENTS (intake_processing / awaiting_documents)
+   The platform checks for a referral letter and a recent imaging or lab report. If both a reason
+   and at least one document are present, this step also extracts diagnosis and procedure codes
+   automatically. If neither a reason nor any document has been provided yet, the referral pauses
+   here — waiting on the patient or referring doctor to add a reason or upload a document. Nothing
+   else can happen until this step has something to work with.
+
+3. VERIFYING INSURANCE COVERAGE (eligibility_checking)
+   The patient's insurance policy number is checked against the payer's network and prior
+   authorization rules. This happens automatically and normally takes moments, not days. See
+   `prior_authorization_policy.txt` for what "prior authorization required" means, and the
+   `insurance/` documents in this knowledge base for what each specific plan covers.
+
+   If verification does not pass (INSURANCE VERIFICATION DID NOT PASS / eligibility_denied), the
+   referral pauses and a care coordinator is notified to review it — a denial is not automatically
+   the end of the referral. A coordinator can override the result after review (for example, if
+   the policy number was mistyped, or a manual authorization was obtained outside the system) and
+   the referral continues from exactly where it left off.
+
+4. SELECTING A SPECIALIST (awaiting_specialist_approval)
+   Once eligibility is confirmed, the platform recommends one or more specialists based on
+   diagnosis, location, and insurance network — each with the reasoning behind the recommendation
+   (network status, distance, rating, next available slot). This is a human-in-the-loop step: a
+   care coordinator or specialist reviews the candidates and confirms one before anything is
+   booked. The platform never books an appointment with a specialist nobody has approved.
+
+5. BOOKING THE APPOINTMENT (scheduling)
+   Once a specialist is confirmed, the platform automatically finds the next available slot with
+   that specialist and books it. If no slot is available within the target wait time, this step
+   flags the referral for a coordinator to consider an alternative.
+
+6. APPOINTMENT SCHEDULED (scheduled)
+   The patient has a confirmed appointment. The referring doctor and the specialist can both see
+   the appointment and every document/history attached to the referral.
+
+7. REFERRAL COMPLETED (completed)
+   After the appointment happens, the treating doctor (or a care coordinator relaying the visit)
+   records the consult outcome — symptoms, diagnosis, and any prescription. The platform then
+   automatically generates a whole-care-journey summary covering the referring doctor's original
+   reason, the specialist's findings, and prior history, visible to everyone who was part of the
+   referral. The referring doctor should be followed up with as advised in that summary.
+
+WHO IS "WAITING ON WHOM"
+Most stages (document review, eligibility checking, appointment booking) run automatically and
+need nobody to act. The two stages that need a human are: a denied eligibility check (waiting on
+care coordination staff) and specialist selection (waiting on a coordinator or specialist to
+confirm a candidate). If a referral seems stuck, check whether it's sitting at one of those two
+stages — that's almost always why.

@@ -6,8 +6,14 @@ tool-call refusal it's meant to guarantee) is verified in the manual
 Postgres + real-Groq smoke test instead, the same split already used for
 `llm_rank_candidates` in Phase 6."""
 from httpx import AsyncClient
+from langchain_core.messages import HumanMessage
 
-from app.agents.assistant_graph import ROLE_TOOL_ALLOWLIST, resolve_role_for_tools
+from app.agents.assistant_graph import (
+    KNOWLEDGE_BASE_TOOLS,
+    ROLE_TOOL_ALLOWLIST,
+    _fetch_kb_prompt_guidance,
+    resolve_role_for_tools,
+)
 from app.api.routes.ai.assistant import faq_fallback
 from app.main import app
 
@@ -144,6 +150,49 @@ def test_no_assistant_tool_param_has_a_nullable_schema():
             if "anyOf" in prop_schema:
                 offenders.append(f"{tool.name}.{prop_name}")
     assert not offenders, f"nullable (anyOf) MCP tool params found — will reject a legitimate null: {offenders}"
+
+
+def test_knowledge_base_tool_available_to_every_role():
+    """search_policy_knowledge_base is non-PHI, first-party reference
+    content, explicitly "available to all" by design (see KNOWLEDGE_BASE_TOOLS
+    in assistant_graph.py) — unlike every other tool set in this allowlist,
+    it isn't withheld from any role."""
+    assert KNOWLEDGE_BASE_TOOLS == {"search_policy_knowledge_base"}
+    for role, tools in ROLE_TOOL_ALLOWLIST.items():
+        assert KNOWLEDGE_BASE_TOOLS <= tools, role
+
+
+class _FakeKBPromptClient:
+    """Stands in for MultiServerMCPClient.get_prompt for
+    _fetch_kb_prompt_guidance — doesn't touch a real MCP server, same
+    granularity as tests/agent_fakes.py's FakeMCPTool."""
+
+    def __init__(self, *, raises: bool = False):
+        self._raises = raises
+
+    async def get_prompt(self, server_name, prompt_name, arguments=None):
+        if self._raises:
+            raise RuntimeError("simulated knowledge-base server outage")
+        text = f"[{prompt_name}] " + (str(arguments) if arguments else "no-args")
+        return [HumanMessage(content=text)]
+
+
+async def test_fetch_kb_prompt_guidance_fetches_both_real_prompt_templates():
+    """Confirms both knowledge_base/main.py prompt templates
+    (explain_referral_process, compare_policies) are actually fetched via
+    client.get_prompt and folded into one string — not hardcoded copies of
+    the template text living in assistant_graph.py itself."""
+    guidance = await _fetch_kb_prompt_guidance(_FakeKBPromptClient())
+    assert "[explain_referral_process]" in guidance
+    assert "[compare_policies]" in guidance
+
+
+async def test_fetch_kb_prompt_guidance_degrades_gracefully_when_kb_server_unreachable():
+    """A knowledge-base outage must not raise out of build_assistant_graph —
+    same never-a-500 posture as every other AI-adjacent fallback here
+    (ADR-005) — it should just contribute no extra guidance."""
+    guidance = await _fetch_kb_prompt_guidance(_FakeKBPromptClient(raises=True))
+    assert guidance == ""
 
 
 def test_only_care_coordinator_gets_the_timeline_and_analytics_tools():

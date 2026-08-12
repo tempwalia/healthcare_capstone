@@ -1,0 +1,29 @@
+TITLE: UnitedCare Basic HMO
+CATEGORY: Insurance Plan
+POLICY NUMBER FORMAT: UNITEDCARE-334455
+PLAN TYPE: HMO (Health Maintenance Organization)
+
+COVERAGE SUMMARY
+UnitedCare Basic HMO covers 2 in-network doctors on this platform's provider directory, one of
+which overlaps with Acme HMO Silver's network.
+
+COST TO THE PATIENT
+Estimated copay: $55 per specialist visit under this plan — the highest copay of the four plans on
+this platform, despite being an HMO (typically the lower-cost plan type) and having one of the
+narrower networks. This is a deliberate illustrative mismatch in the mock data, worth surfacing
+directly to a patient comparing plans by copay alone.
+
+PRIOR AUTHORIZATION
+Like every plan on this platform, referrals involving spine-related diagnosis codes (ICD-10 M51 or
+M54 — see `prior_authorization_policy.txt`) require prior authorization under this plan.
+
+WHEN VERIFICATION FAILS
+If a policy number doesn't match this plan's expected format, or the plan can't be recognized at
+all, eligibility verification returns as not verified and the referral pauses for a care
+coordinator to review.
+
+HOW TO COMPARE THIS PLAN
+Despite being "Basic," UnitedCare Basic HMO has the highest copay ($55) of the four plans here —
+higher than even Acme PPO Gold ($40), which also has the broadest network. A patient comparing
+purely on cost should not assume "HMO" or "Basic" implies the lowest price; check the actual copay
+and network overlap with the specific doctor needed.

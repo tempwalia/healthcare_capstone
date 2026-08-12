@@ -1,0 +1,42 @@
+TITLE: How Your Health Information Is Used and Protected
+CATEGORY: Privacy & Compliance
+AUDIENCE: Patients, all platform users
+
+WHAT INFORMATION THIS PLATFORM HOLDS
+Referral details, uploaded documents (referral letters, imaging/lab reports), appointment records,
+medical records, and insurance details you or your care team provide, tied to your account.
+
+WHO CAN SEE IT
+Access follows a minimum-necessary principle, enforced by the platform, not just described here:
+- You can always see your own referrals, appointments, medical records, and insurance on file.
+- Your referring doctor and any specialist you're actually referred to can see records tied to
+  that specific referral or appointment — not your entire history with other providers.
+- Care coordination staff can see referral status platform-wide, to help move referrals along, but
+  clinical records (appointments, medical records) stay limited to staff who are actually a party
+  to them.
+- Payer-side staff can see referral and analytics data for oversight, but never clinical
+  appointment or medical-record detail.
+- Every access to your data — by a person or by the AI assistant on your behalf — is scoped to
+  what that specific role is allowed to see, checked on every single request rather than assumed
+  from a login screen once.
+
+CONSENT
+Sharing your information across a boundary — for example, a specialist outside your immediate care
+team, or a payer — requires an active consent on file before it happens. No cross-boundary share
+happens silently.
+
+HOW THE AI ASSISTANT USES YOUR DATA
+The conversational assistant only ever answers using data the same access rules above already
+allow the person asking to see. A patient's assistant session can only ever discuss that patient's
+own records — it is not able to look up another patient's information, by ID or otherwise, and
+will say so directly if asked.
+
+AUDIT TRAIL
+Every action that creates, changes, or reveals a record — including the AI assistant's own tool
+calls — is logged with who did it, what they did, and when. This log exists to make access
+reviewable, not to track you; it is visible to platform administrators for oversight, not to every
+user.
+
+RECORD RETENTION
+Records are never silently deleted. Removing a record marks it as removed rather than erasing it,
+preserving the audit trail, and it can be restored by an administrator if removed in error.

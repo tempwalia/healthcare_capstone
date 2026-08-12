@@ -36,5 +36,13 @@ async def run_referral_workflow(referral_id: int) -> None:
         "patient_id": patient_id,
         "status": "intake_processing",
     }
-    config = {"configurable": {"thread_id": f"referral-{referral_id}"}}
+    config = {
+        "configurable": {"thread_id": f"referral-{referral_id}"},
+        # run_name/tags/metadata organize LangSmith traces (LANGSMITH_TRACING
+        # in .env) by which of this app's two LangGraph apps produced them —
+        # inert, zero-cost no-ops when tracing is off.
+        "run_name": "referral-workflow",
+        "tags": ["referral-workflow"],
+        "metadata": {"referral_id": referral_id},
+    }
     await agent_graph.get_compiled_graph().ainvoke(initial_state, config=config)

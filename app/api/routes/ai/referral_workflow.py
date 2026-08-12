@@ -60,7 +60,12 @@ async def resume_workflow(
         )
 
     graph = agent_graph.get_compiled_graph()
-    config = {"configurable": {"thread_id": f"referral-{referral_id}"}}
+    config = {
+        "configurable": {"thread_id": f"referral-{referral_id}"},
+        "run_name": "referral-workflow-resume",
+        "tags": ["referral-workflow", "resume"],
+        "metadata": {"referral_id": referral_id},
+    }
 
     snapshot = await graph.aget_state(config)
     if not snapshot.interrupts:
@@ -132,7 +137,12 @@ async def override_eligibility(
         )
 
     graph = agent_graph.get_compiled_graph()
-    config = {"configurable": {"thread_id": f"referral-{referral_id}"}}
+    config = {
+        "configurable": {"thread_id": f"referral-{referral_id}"},
+        "run_name": "referral-workflow-eligibility-override",
+        "tags": ["referral-workflow", "resume", "eligibility-override"],
+        "metadata": {"referral_id": referral_id},
+    }
     snapshot = await graph.aget_state(config)
     if not snapshot.interrupts:
         raise HTTPException(

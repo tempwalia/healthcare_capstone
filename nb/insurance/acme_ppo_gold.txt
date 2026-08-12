@@ -1,0 +1,31 @@
+TITLE: Acme PPO Gold
+CATEGORY: Insurance Plan
+POLICY NUMBER FORMAT: ACME-991123
+PLAN TYPE: PPO (Preferred Provider Organization)
+
+COVERAGE SUMMARY
+Acme PPO Gold is Acme's higher-tier plan, with the broadest in-network specialist access of the
+plans on this platform. Referrals verified against this plan connect the patient with three
+in-network doctors on the platform's provider directory today, spanning orthopedics and related
+specialties.
+
+COST TO THE PATIENT
+Estimated copay: $40 per specialist visit under this plan.
+
+PRIOR AUTHORIZATION
+Like every plan on this platform, referrals involving spine-related diagnosis codes (ICD-10 M51 or
+M54 — see `prior_authorization_policy.txt`) require prior authorization under this plan. This does
+not block the referral; it's a flag for the care team that formal authorization paperwork may be
+needed alongside the visit.
+
+WHEN VERIFICATION FAILS
+If a policy number doesn't match this plan's expected format, or the plan can't be recognized at
+all, eligibility verification returns as not verified and the referral pauses for a care
+coordinator to review — this is the same handling every plan on the platform gets, not specific to
+Acme.
+
+HOW TO COMPARE THIS PLAN
+Acme PPO Gold has a higher copay than Acme HMO Silver ($40 vs $25) but noticeably broader network
+access (3 in-network doctors vs 2). Compared to Horizon Blue PPO, it covers a different, mostly
+non-overlapping set of in-network doctors — which plan is "better" for a specific referral depends
+on which doctor the patient actually needs to see.

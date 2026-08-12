@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Optional, Set
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -6,6 +7,8 @@ from langgraph.prebuilt import create_react_agent
 from app.agents import graph as agent_graph
 from app.agents.llm import StubChatModel, get_chat_model
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Read-only, referral-domain tools only. Every one of these routes goes
 # through app/api/routes/referral.py::_get_scoped_referral (or the same
@@ -39,12 +42,20 @@ STAFF_PATIENT_TOOLS: Set[str] = {"get_patient_context", "list_appointments", "li
 # so there's never an id for the model to guess or substitute.
 PATIENT_SELF_TOOLS: Set[str] = {"get_my_patient_context"}
 
+# The local policy knowledge base (nb/, knowledge_base/main.py) — non-PHI,
+# first-party reference content (referral/appointment process, prior-auth,
+# privacy, insurance plan details), explicitly "available to all" per its own
+# design, so it's unioned into every role below rather than living in its own
+# narrower set the way STAFF_PATIENT_TOOLS/PATIENT_SELF_TOOLS do.
+KNOWLEDGE_BASE_TOOLS: Set[str] = {"search_policy_knowledge_base"}
+
 ROLE_TOOL_ALLOWLIST: dict[str, Set[str]] = {
-    "patient": BASE_REFERRAL_TOOLS | PATIENT_SELF_TOOLS,
-    "pcp": BASE_REFERRAL_TOOLS | STAFF_PATIENT_TOOLS,
-    "specialist": BASE_REFERRAL_TOOLS | STAFF_PATIENT_TOOLS,
+    "patient": BASE_REFERRAL_TOOLS | PATIENT_SELF_TOOLS | KNOWLEDGE_BASE_TOOLS,
+    "pcp": BASE_REFERRAL_TOOLS | STAFF_PATIENT_TOOLS | KNOWLEDGE_BASE_TOOLS,
+    "specialist": BASE_REFERRAL_TOOLS | STAFF_PATIENT_TOOLS | KNOWLEDGE_BASE_TOOLS,
     "care_coordinator": BASE_REFERRAL_TOOLS
     | STAFF_PATIENT_TOOLS
+    | KNOWLEDGE_BASE_TOOLS
     | {
         "get_workflow_state", "list_slots", "list_availability",
         # Both added for the "de-siloing" pass: same visibility gate as
@@ -58,7 +69,7 @@ ROLE_TOOL_ALLOWLIST: dict[str, Set[str]] = {
     # tied to any one referral either — see app/core/seed.py) plus
     # get_workflow_state to check whether a referral still has a pending
     # specialist-approval step to pick up.
-    "doctor": BASE_REFERRAL_TOOLS | STAFF_PATIENT_TOOLS | {"get_workflow_state"},
+    "doctor": BASE_REFERRAL_TOOLS | STAFF_PATIENT_TOOLS | KNOWLEDGE_BASE_TOOLS | {"get_workflow_state"},
     # Read-only oversight, no clinical access: payer_admin's only granted
     # permissions are referral:view_all and analytics:view (app/core/seed.py)
     # — no patient/appointment/medical_record permission at all, so
@@ -66,13 +77,16 @@ ROLE_TOOL_ALLOWLIST: dict[str, Set[str]] = {
     # names alone wouldn't leak anything a payer shouldn't see (the routes
     # would just 403); scoping the assistant's tool surface to match this
     # role's real permission set, not just what happens to succeed.
-    "payer_admin": BASE_REFERRAL_TOOLS | {"get_referral_analytics_summary", "get_referral_timeline"},
+    "payer_admin": BASE_REFERRAL_TOOLS
+    | KNOWLEDGE_BASE_TOOLS
+    | {"get_referral_analytics_summary", "get_referral_timeline"},
     # admin:* bypasses every permission check at the route level, so there's
     # no narrower "correct" tool surface to compute — give it the union of
     # every other role's tools (the same breadth an admin already has by
     # clicking through every page of the dashboard).
     "admin": BASE_REFERRAL_TOOLS
     | STAFF_PATIENT_TOOLS
+    | KNOWLEDGE_BASE_TOOLS
     | {
         "get_workflow_state", "list_slots", "list_availability",
         "get_referral_timeline", "get_referral_analytics_summary",
@@ -175,6 +189,34 @@ def resolve_role_for_tools(granted_role_names: Set[str]) -> str:
     return "patient"  # most restrictive default for an unrecognized/absent role
 
 
+# compare_policies requires two arguments and none are known yet at
+# graph-build time (no user message has been read) — fetched with generic
+# placeholder values purely to obtain its templated instruction structure,
+# not to compare two real, invented plans.
+_COMPARE_POLICIES_PLACEHOLDER_ARGS = {"policy_a": "<first policy name>", "policy_b": "<second policy name>"}
+
+
+async def _fetch_kb_prompt_guidance(client: MultiServerMCPClient) -> str:
+    """Real MCP prompt-template fetches (`client.get_prompt`, not a hardcoded
+    copy of the template text) folded into the system prompt, so the two
+    `knowledge_base` prompt templates shape every real chat turn, not just
+    something reachable by an external MCP client like the Inspector. Returns
+    "" (not raised) if the knowledge-base server is unreachable — this is
+    supplementary guidance, not something that should take the whole
+    assistant down if it fails (same posture as every other AI-adjacent
+    fallback in this codebase, see ADR-005)."""
+    try:
+        explain_msgs = await client.get_prompt("knowledgebase", "explain_referral_process")
+        compare_msgs = await client.get_prompt(
+            "knowledgebase", "compare_policies", arguments=_COMPARE_POLICIES_PLACEHOLDER_ARGS
+        )
+    except Exception:
+        logger.warning("assistant: failed to fetch knowledge-base prompt templates", exc_info=True)
+        return ""
+    parts = [str(m.content) for m in (*explain_msgs, *compare_msgs) if m.content]
+    return "\n".join(parts)
+
+
 async def build_assistant_graph(role: str, auth_token: str) -> Optional[Any]:
     """Built fresh per chat request, not cached at module/startup scope like
     the referral workflow graph — the whole point is that the MCP client
@@ -199,13 +241,44 @@ async def build_assistant_graph(role: str, auth_token: str) -> Optional[Any]:
             "url": f"{settings.api_base_url}/mcp",
             "transport": "streamable_http",
             "headers": {"Authorization": f"Bearer {auth_token}"},
-        }
+        },
+        # Non-PHI, first-party reference content — no bearer token needed
+        # (see KNOWLEDGE_BASE_TOOLS above and nb/README.md).
+        "knowledgebase": {"url": f"{settings.kb_base_url}/kb/mcp", "transport": "streamable_http"},
     })
-    all_tools = await client.get_tools()
+    platform_tools = await client.get_tools(server_name="platform")
+    try:
+        kb_tools = await client.get_tools(server_name="knowledgebase")
+    except Exception:
+        # Fetched per-server (not client.get_tools() across both) specifically
+        # so a knowledge-base outage degrades to "assistant works without KB
+        # search" rather than 500ing the whole chat endpoint — MultiServerMCPClient
+        # .get_tools() with no server_name gathers every server without
+        # return_exceptions=True, so one broken server would otherwise take
+        # down the referral tools too.
+        logger.warning("assistant: failed to load knowledge-base MCP tools", exc_info=True)
+        kb_tools = []
+    all_tools = platform_tools + kb_tools
+
     allowed = ROLE_TOOL_ALLOWLIST.get(role, ROLE_TOOL_ALLOWLIST["patient"])
     tools = [tool for tool in all_tools if tool.name in allowed]
 
-    return create_react_agent(
-        llm, tools, checkpointer=checkpointer,
-        prompt=ROLE_SYSTEM_PROMPTS.get(role, ROLE_SYSTEM_PROMPTS["patient"]),
-    )
+    system_prompt = ROLE_SYSTEM_PROMPTS.get(role, ROLE_SYSTEM_PROMPTS["patient"])
+    kb_guidance = await _fetch_kb_prompt_guidance(client)
+    if kb_guidance:
+        # Explicit disambiguation, not just appending the fetched template
+        # text: every role prompt above is written around "only ever your
+        # own / only patients you're a party to" language for *patient
+        # records* — without this line, a model reliably over-applies that
+        # restriction to search_policy_knowledge_base too and refuses a
+        # plain "compare these two plans" question, confirmed live against
+        # the real Groq-hosted model this app defaults to.
+        system_prompt = (
+            f"{system_prompt}\n\nKnowledge-base usage guidance: search_policy_knowledge_base searches "
+            f"general reference material (how referrals/appointments work, prior authorization, privacy, "
+            f"and each insurance plan's public coverage details) — it is NOT a specific patient's private "
+            f"data, so the \"only ever the caller's own\" restriction above does not apply to it. Freely "
+            f"answer general policy questions and plan-to-plan comparisons for anyone who asks.\n{kb_guidance}"
+        )
+
+    return create_react_agent(llm, tools, checkpointer=checkpointer, prompt=system_prompt)

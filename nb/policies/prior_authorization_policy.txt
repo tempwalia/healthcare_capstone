@@ -1,0 +1,28 @@
+TITLE: Prior Authorization — When It's Required and What It Means
+CATEGORY: Eligibility & Insurance
+AUDIENCE: Patients, care coordinators, payer staff
+
+WHAT PRIOR AUTHORIZATION MEANS HERE
+Prior authorization means the payer requires sign-off before a specific procedure is covered,
+separate from basic eligibility (whether the plan is active and in-network). A referral can be
+fully "verified" and in-network and still be marked as requiring prior authorization — those are
+two different checks.
+
+WHICH REFERRALS TRIGGER IT
+On this platform, prior authorization is required whenever the referral's procedure code falls
+under a spine or musculoskeletal category — specifically ICD-10 codes beginning with M51 (spine
+disc disorders, e.g. a herniated disc) or M54 (back pain / dorsalgia). This is a deliberately
+narrow, illustrative rule matching the mock payer system's own logic, not a claim that only these
+two categories ever require authorization with a real insurer.
+
+WHAT HAPPENS WHEN IT'S REQUIRED
+The eligibility check still returns "verified" if the plan and network status are otherwise fine —
+prior_auth_required is a flag alongside that result, not a denial. It's informational: the care
+team should be aware that formal authorization paperwork may be needed with the real payer before
+or alongside the visit, in addition to the platform's own referral approval steps.
+
+HOW THIS DIFFERS FROM A DENIED ELIGIBILITY CHECK
+A denied eligibility check (unrecognized policy number, out-of-network plan) stops the referral
+and routes it to a care coordinator for review before anything else can happen. A prior-auth flag
+does not stop the referral — it proceeds through specialist selection and scheduling normally,
+with the flag visible on the referral record as a reminder.

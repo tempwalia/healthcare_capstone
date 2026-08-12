@@ -57,7 +57,12 @@ async def chat(
     if graph is None:
         return {"reply": faq_fallback(body.message)}
 
-    config = {"configurable": {"thread_id": f"chat-{current_user.id}-{body.session_id}"}}
+    config = {
+        "configurable": {"thread_id": f"chat-{current_user.id}-{body.session_id}"},
+        "run_name": "assistant-chat",
+        "tags": ["assistant"],
+        "metadata": {"role": role, "user_id": current_user.id},
+    }
     try:
         result = await graph.ainvoke({"messages": [("user", body.message)]}, config=config)
         return {"reply": result["messages"][-1].content}

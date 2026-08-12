@@ -1,0 +1,28 @@
+TITLE: Horizon Blue PPO
+CATEGORY: Insurance Plan
+POLICY NUMBER FORMAT: HORIZON-556677
+PLAN TYPE: PPO (Preferred Provider Organization)
+
+COVERAGE SUMMARY
+Horizon Blue PPO covers a distinct pair of in-network doctors on this platform's provider
+directory, separate from Acme's network — a patient on this plan should expect a different set of
+in-network specialist options than an Acme plan member.
+
+COST TO THE PATIENT
+Estimated copay: $30 per specialist visit under this plan — between Acme HMO Silver's $25 and Acme
+PPO Gold's $40.
+
+PRIOR AUTHORIZATION
+Like every plan on this platform, referrals involving spine-related diagnosis codes (ICD-10 M51 or
+M54 — see `prior_authorization_policy.txt`) require prior authorization under this plan.
+
+WHEN VERIFICATION FAILS
+If a policy number doesn't match this plan's expected format, or the plan can't be recognized at
+all, eligibility verification returns as not verified and the referral pauses for a care
+coordinator to review.
+
+HOW TO COMPARE THIS PLAN
+Horizon Blue PPO's copay ($30) sits between the two Acme plans, but its in-network doctor list does
+not overlap with Acme PPO Gold's at all — a patient who specifically needs to see a doctor in
+Acme's network won't get in-network coverage from Horizon Blue PPO, regardless of copay. Compare
+against the specific doctor's network status, not copay alone.
