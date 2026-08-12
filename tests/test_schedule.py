@@ -4,6 +4,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.models.schedule import ScheduleSlot
+from app.services.scheduling import find_preferred_or_soonest_slot
 from tests.test_record_scope import _reset_roles
 from tests.test_referral import _grant_role, _link_patient_to_user
 
@@ -95,6 +96,60 @@ async def test_book_slot_creates_appointment_and_marks_slot_booked(
         "/schedule/slots/", params={"doctor_id": doctor["id"], "is_booked": False}, headers=auth_headers
     )).json()
     assert all(s["id"] != slot_id for s in remaining["items"])
+
+    # Omitting is_booked entirely must still return every slot regardless of
+    # booked status — the genuine tri-state case (see list_slots's is_booked
+    # string-sentinel design, not a plain bool default) that a naive
+    # `bool = False` fix would have silently broken by making "no filter"
+    # behave like "only unbooked".
+    unfiltered = (await test_client.get(
+        "/schedule/slots/", params={"doctor_id": doctor["id"]}, headers=auth_headers
+    )).json()
+    assert slot_id in {s["id"] for s in unfiltered["items"]}
+    assert any(not s["is_booked"] for s in unfiltered["items"])
+
+    only_booked = (await test_client.get(
+        "/schedule/slots/", params={"doctor_id": doctor["id"], "is_booked": True}, headers=auth_headers
+    )).json()
+    assert {s["id"] for s in only_booked["items"]} == {slot_id}
+
+
+async def test_book_slot_with_medical_record_id_sets_it_on_appointment(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data, test_patient_data
+):
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    doctor = await _create_doctor(test_client, auth_headers, test_doctor_data)
+    patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
+    other_data = {**test_patient_data, "email": "other.book@example.com"}
+    other_patient = (await test_client.post("/patients/", json=other_data, headers=auth_headers)).json()
+    record = (await test_client.post(
+        "/medical-records/",
+        json={"patient_id": patient["id"], "doctor_id": doctor["id"], "visit_date": "2026-07-01T09:00:00Z"},
+        headers=auth_headers,
+    )).json()
+    await test_client.post(
+        "/schedule/availability/",
+        json={"doctor_id": doctor["id"], "weekday": 0, "start_time": "09:00", "end_time": "12:00", "slot_minutes": 30},
+        headers=auth_headers,
+    )
+    slots = (await test_client.post(
+        "/schedule/slots/generate", json={"doctor_id": doctor["id"], "days_ahead": 14}, headers=auth_headers
+    )).json()
+
+    mismatched = await test_client.post(
+        f"/schedule/slots/{slots[0]['id']}/book",
+        json={"patient_id": other_patient["id"], "medical_record_id": record["id"]},
+        headers=auth_headers,
+    )
+    assert mismatched.status_code == 400
+
+    booked = await test_client.post(
+        f"/schedule/slots/{slots[1]['id']}/book",
+        json={"patient_id": patient["id"], "medical_record_id": record["id"]},
+        headers=auth_headers,
+    )
+    assert booked.status_code == 201
+    assert booked.json()["medical_record_id"] == record["id"]
 
 
 async def test_cannot_book_second_appointment_with_same_doctor_for_same_reason(
@@ -253,3 +308,41 @@ async def test_generate_slots_for_doctor_without_availability_returns_empty(
     )
     assert response.status_code == 200
     assert response.json() == []
+
+
+async def test_find_preferred_or_soonest_slot_falls_back_when_preferred_is_unavailable(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data
+):
+    """book_real_appointment_node re-validates the requester's preferred
+    slot at booking time (not just at submission time) — if it's since
+    become unavailable, this falls back to the soonest open slot instead of
+    failing outright."""
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    doctor = await _create_doctor(test_client, auth_headers, test_doctor_data)
+    await test_client.post(
+        "/schedule/availability/",
+        json={"doctor_id": doctor["id"], "weekday": 0, "start_time": "09:00", "end_time": "12:00", "slot_minutes": 30},
+        headers=auth_headers,
+    )
+    slots = (await test_client.post(
+        "/schedule/slots/generate", json={"doctor_id": doctor["id"], "days_ahead": 14}, headers=auth_headers
+    )).json()
+    slots.sort(key=lambda s: s["starts_at"])
+    soonest, preferred, still_open = slots[0], slots[1], slots[2]
+
+    # Simulate the preferred slot having been taken by someone else since
+    # the referral carrying it was originally submitted.
+    db_slot = (await test_session.execute(select(ScheduleSlot).where(ScheduleSlot.id == preferred["id"]))).scalar_one()
+    db_slot.is_booked = True
+    await test_session.commit()
+
+    resolved = await find_preferred_or_soonest_slot(
+        test_session, doctor_id=doctor["id"], preferred_slot_id=preferred["id"],
+    )
+    assert resolved.id == soonest["id"]
+
+    # A still-open preferred slot is honored as-is, not overridden by "soonest".
+    resolved_valid = await find_preferred_or_soonest_slot(
+        test_session, doctor_id=doctor["id"], preferred_slot_id=still_open["id"],
+    )
+    assert resolved_valid.id == still_open["id"]

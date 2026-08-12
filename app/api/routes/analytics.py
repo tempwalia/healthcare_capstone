@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.nodes.specialist import infer_specialty
+from app.services.doctor_recommendation import infer_specialty
 from app.api.dependencies.auth import require_permission
 from app.api.dependencies.database import get_async_session
 from app.core.time_utils import ensure_aware

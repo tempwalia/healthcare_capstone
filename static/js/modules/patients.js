@@ -2,8 +2,14 @@ import { createResourceModule } from "../resource.js";
 import { navigate } from "../router.js";
 import { formatDate, capitalize } from "../utils.js";
 
-const SAMPLE_ADDRESSES = [
-  "142 Maple Street, Springfield", "78 Oak Avenue, Riverside", "215 Birch Lane, Fairview", "56 Cedar Court, Lakeside",
+// city kept in lockstep with the address's own city so the two stay
+// consistent — also the pool doctors.js's sample data draws its own city
+// from, so demo patients and doctors actually land in the same cities.
+const SAMPLE_LOCATIONS = [
+  { address: "142 Maple Street, Springfield", city: "Springfield" },
+  { address: "78 Oak Avenue, Riverside", city: "Riverside" },
+  { address: "215 Birch Lane, Fairview", city: "Fairview" },
+  { address: "56 Cedar Court, Lakeside", city: "Lakeside" },
 ];
 const SAMPLE_ALLERGIES = ["None known", "Penicillin", "Peanuts", "Latex", "Sulfa drugs"];
 const BLOOD_TYPES = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
@@ -34,12 +40,14 @@ function randomPhone() {
 export function samplePatientData() {
   const stamp = Date.now().toString().slice(-7);
   const policyNumber = randomFrom(Object.keys(VERIFIED_POLICIES));
+  const location = randomFrom(SAMPLE_LOCATIONS);
   return {
     email: `patient.${stamp}@example.com`,
     phone: randomPhone(),
     date_of_birth: randomDateOfBirth(),
     gender: randomFrom(["male", "female", "other"]),
-    address: randomFrom(SAMPLE_ADDRESSES),
+    address: location.address,
+    city: location.city,
     emergency_contact_name: "Jordan Lee",
     emergency_contact_phone: randomPhone(),
     insurance_provider: VERIFIED_POLICIES[policyNumber],
@@ -63,6 +71,10 @@ export const patientFields = [
   { name: "date_of_birth", label: "Date of Birth", type: "date", required: true },
   { name: "gender", label: "Gender", type: "select", options: ["male", "female", "other"], required: true, numeric: false },
   { name: "address", label: "Address", type: "textarea" },
+  {
+    name: "city", label: "City", type: "text",
+    hint: "Used to prioritize nearby doctors when requesting a referral or appointment.",
+  },
   { name: "emergency_contact_name", label: "Emergency Contact Name", type: "text" },
   { name: "emergency_contact_phone", label: "Emergency Contact Phone", type: "text" },
   { name: "insurance_provider", label: "Insurance Provider", type: "text" },
@@ -93,6 +105,7 @@ export default createResourceModule({
     { key: "date_of_birth", label: "DOB", format: (r) => formatDate(r.date_of_birth) },
     { key: "gender", label: "Gender", format: (r) => capitalize(r.gender) },
     { key: "phone", label: "Phone" },
+    { key: "city", label: "City" },
     { key: "insurance_provider", label: "Insurance" },
   ],
   fields: patientFields,

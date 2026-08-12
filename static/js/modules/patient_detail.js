@@ -26,6 +26,7 @@ function renderExtractedCodes(doc) {
 
 const doctorNameCache = new Map();
 async function resolveDoctorName(id) {
+  if (id == null) return "—";
   if (doctorNameCache.has(id)) return doctorNameCache.get(id);
   const name = await api
     .get(`/doctors/${id}`)

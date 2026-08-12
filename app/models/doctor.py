@@ -26,6 +26,9 @@ class Doctor(Base, SoftDeleteMixin):
     department = Column(String(100))
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
+    # Simple city/region text match for proximity ranking — see
+    # app.services.doctor_recommendation.recommend_platform_doctors.
+    city = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

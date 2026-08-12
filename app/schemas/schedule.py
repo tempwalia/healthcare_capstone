@@ -42,3 +42,6 @@ class GenerateSlotsRequest(BaseModel):
 class BookSlotRequest(BaseModel):
     patient_id: int
     reason: Optional[str] = None
+    # An existing medical record the requester attached at booking time —
+    # see app.services.record_scope.validate_medical_record_for_patient.
+    medical_record_id: Optional[int] = None

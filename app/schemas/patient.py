@@ -15,6 +15,9 @@ class PatientBase(BaseModel):
     date_of_birth: date
     gender: GenderEnum
     address: Optional[str] = None
+    # Simple city/region text match for doctor-proximity ranking — see
+    # app.services.doctor_recommendation.recommend_platform_doctors.
+    city: Optional[str] = None
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
     insurance_provider: Optional[str] = None
@@ -38,6 +41,9 @@ class PatientUpdate(BaseModel):
     date_of_birth: Optional[date] = None
     gender: Optional[GenderEnum] = None
     address: Optional[str] = None
+    # Simple city/region text match for doctor-proximity ranking — see
+    # app.services.doctor_recommendation.recommend_platform_doctors.
+    city: Optional[str] = None
     emergency_contact_name: Optional[str] = None
     emergency_contact_phone: Optional[str] = None
     insurance_provider: Optional[str] = None
@@ -70,7 +76,7 @@ class PatientContextAppointment(BaseModel):
 
 class PatientContextMedicalRecord(BaseModel):
     id: int
-    doctor_id: int
+    doctor_id: Optional[int] = None
     visit_date: datetime
     diagnosis: Optional[str] = None
     treatment: Optional[str] = None

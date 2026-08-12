@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +10,8 @@ from app.api.dependencies.auth import get_current_active_user, oauth2_scheme
 from app.api.dependencies.database import get_async_session
 from app.models.user import User
 from app.schemas.assistant import ChatRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
@@ -54,5 +58,21 @@ async def chat(
         return {"reply": faq_fallback(body.message)}
 
     config = {"configurable": {"thread_id": f"chat-{current_user.id}-{body.session_id}"}}
-    result = await graph.ainvoke({"messages": [("user", body.message)]}, config=config)
-    return {"reply": result["messages"][-1].content}
+    try:
+        result = await graph.ainvoke({"messages": [("user", body.message)]}, config=config)
+        return {"reply": result["messages"][-1].content}
+    except Exception:
+        # A tool-call the model made (bad schema, a downstream route 4xx/5xx,
+        # a malformed LLM response, ...) previously bubbled up as a raw,
+        # unhandled 500 — "Sorry, something went wrong: Internal Server
+        # Error" with no way for the user to recover except reloading. This
+        # keeps the conversation alive (same graceful-degradation spirit as
+        # faq_fallback above) instead of dead-ending the whole chat on one
+        # bad turn; logged with the role/message for real debugging, not
+        # swallowed silently.
+        logger.exception(
+            "assistant chat failed (user_id=%s, role=%s, message=%r)", current_user.id, role, body.message,
+        )
+        return {
+            "reply": "Sorry, I couldn't answer that just now — could you try rephrasing, or ask again in a moment?"
+        }

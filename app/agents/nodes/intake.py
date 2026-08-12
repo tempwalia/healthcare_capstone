@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.agents.llm import StubChatModel, get_chat_model
-from app.agents.nodes.specialist import _SPECIALTY_KEYWORDS
+from app.services.doctor_recommendation import _SPECIALTY_KEYWORDS
 from app.agents.state import ReferralState
 from app.database import session as db_session
 from app.events.outbox import write_outbox_event

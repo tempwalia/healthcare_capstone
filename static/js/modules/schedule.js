@@ -13,33 +13,6 @@ const WEEKDAYS = [
   { value: 6, label: "Sunday" },
 ];
 
-// Mirrors specialist_node's infer_specialty keyword table (app/agents/nodes/specialist.py) —
-// a client-side approximation used only to rank/highlight doctors for direct/manual booking.
-// The AI referral workflow's own recommendation (specialist_candidates, surfaced on a referral's
-// Workflow State tab) is the authoritative one for AI-routed referrals; this is a lighter-weight
-// helper for booking outside that flow.
-const SPECIALTY_KEYWORDS = {
-  Orthopedics: ["back", "spine", "joint", "knee", "hip", "shoulder", "fracture", "orthopedic"],
-  Cardiology: ["heart", "cardiac", "chest pain", "palpitation", "cardio"],
-  Dermatology: ["skin", "rash", "derma", "mole", "eczema"],
-  Neurology: ["headache", "migraine", "seizure", "numbness", "neuro"],
-  "Family Medicine": ["checkup", "general", "wellness", "physical"],
-};
-function inferSpecialtyFromText(text) {
-  const lower = (text || "").toLowerCase();
-  for (const [specialty, keywords] of Object.entries(SPECIALTY_KEYWORDS)) {
-    if (keywords.some((k) => lower.includes(k))) return specialty;
-  }
-  return null;
-}
-
-function infoBlock(label, value) {
-  return el("div", {}, [
-    el("div", { class: "muted", style: "font-size:11.5px;margin-bottom:2px;" }, label),
-    el("div", {}, value),
-  ]);
-}
-
 async function fillDoctorOptions(select, { placeholder = "Select a doctor…" } = {}) {
   select.innerHTML = "";
   select.appendChild(el("option", { value: "" }, "Loading doctors…"));
@@ -53,22 +26,6 @@ async function fillDoctorOptions(select, { placeholder = "Select a doctor…" } 
   } catch {
     select.innerHTML = "";
     select.appendChild(el("option", { value: "" }, "Failed to load doctors"));
-  }
-}
-
-async function fillPatientOptions(select) {
-  select.innerHTML = "";
-  select.appendChild(el("option", { value: "" }, "Loading patients…"));
-  try {
-    const page = await api.get("/patients/?limit=200");
-    select.innerHTML = "";
-    select.appendChild(el("option", { value: "" }, "Select a patient…"));
-    for (const p of page.items || []) {
-      select.appendChild(el("option", { value: p.id }, `${p.first_name} ${p.last_name} (#${p.id})`));
-    }
-  } catch {
-    select.innerHTML = "";
-    select.appendChild(el("option", { value: "" }, "Failed to load patients"));
   }
 }
 
@@ -212,193 +169,19 @@ export async function render(container) {
     );
   }
 
-  // ---- Recommended-doctor booking flow ----
-  const bookPatientSelect = el("select", { style: "max-width:260px;" });
-  fillPatientOptions(bookPatientSelect);
-  const symptomsInput = el("textarea", { placeholder: "Describe symptoms / reason for visit — used to suggest a specialty…" });
-  const findBtn = el("button", { class: "btn-primary btn-sm" }, "Find Recommended Doctors");
-  const doctorResultsHost = el("div", {});
-  const slotsHost = el("div", {});
-  const receiptHost = el("div", {});
-
-  findBtn.addEventListener("click", async () => {
-    const patientId = Number(bookPatientSelect.value);
-    if (!patientId) {
-      toast("Select a patient first.", "error");
-      return;
-    }
-    slotsHost.innerHTML = "";
-    doctorResultsHost.innerHTML = '<div class="loading-line">Loading doctors…</div>';
-    let doctors;
-    try {
-      doctors = (await api.get("/doctors/?limit=200")).items || [];
-    } catch (err) {
-      doctorResultsHost.innerHTML = "";
-      doctorResultsHost.appendChild(el("div", { class: "banner banner-error" }, err.message || "Failed to load doctors."));
-      return;
-    }
-    const suggested = inferSpecialtyFromText(symptomsInput.value);
-    const specialtyRanked = suggested
-      ? [...doctors].sort((a, b) => (b.specialization === suggested ? 1 : 0) - (a.specialization === suggested ? 1 : 0))
-      : doctors;
-    await renderDoctorResults(specialtyRanked, suggested, patientId);
-  });
-
-  // A "recommended" doctor with zero open slots is a dead end — the exact
-  // "Available slots — Dr. X / No open slots for this doctor yet" complaint.
-  // Checking real slot counts up front (for the shown subset only, to keep
-  // this to one bounded batch of requests) lets doctors who actually have
-  // openings surface first, and flags the ones who don't before a click
-  // wastes a round-trip finding out.
-  async function openSlotCount(doctorId) {
-    try {
-      const page = await api.get(`/schedule/slots/?doctor_id=${doctorId}&is_booked=false&upcoming_only=true&limit=1`);
-      return page.total ?? (page.items || []).length;
-    } catch {
-      return null; // unknown — don't claim "no slots" if the check itself failed
-    }
-  }
-
-  async function renderDoctorResults(doctors, suggested, patientId) {
-    doctorResultsHost.innerHTML = "";
-    doctorResultsHost.appendChild(
-      el("div", { class: "banner banner-info" },
-        suggested
-          ? `Based on the symptoms entered, "${suggested}" looks like the best-matching specialty — matching doctors are listed first, and doctors with open slots are ranked ahead of those without.`
-          : "No specialty keywords matched that description — showing all doctors, with open-slot doctors ranked first."
-      )
-    );
-    if (!doctors.length) {
-      doctorResultsHost.appendChild(el("div", { class: "empty-state" }, "No doctors in the directory yet — add one on the Doctors page."));
-      return;
-    }
-    doctorResultsHost.appendChild(skeletonBlock(3));
-
-    const shortlist = doctors.slice(0, 12);
-    const slotCounts = await Promise.all(shortlist.map((d) => openSlotCount(d.id)));
-    const withCounts = shortlist.map((d, i) => ({ doctor: d, openSlots: slotCounts[i] }));
-    // Stable-ish: doctors with a known nonzero count first, then unknown
-    // (check failed), then confirmed zero — never hides a doctor, just
-    // deprioritizes the ones we already know have nothing to book.
-    withCounts.sort((a, b) => {
-      const rank = (c) => (c === null ? 1 : c > 0 ? 0 : 2);
-      return rank(a.openSlots) - rank(b.openSlots);
-    });
-
-    doctorResultsHost.innerHTML = "";
-    doctorResultsHost.appendChild(
-      el("div", { class: "banner banner-info" },
-        suggested
-          ? `Based on the symptoms entered, "${suggested}" looks like the best-matching specialty — matching doctors are listed first, and doctors with open slots are ranked ahead of those without.`
-          : "No specialty keywords matched that description — showing all doctors, with open-slot doctors ranked first."
-      )
-    );
-    const cardsHost = el("div", { class: "grid-auto" });
-    for (const { doctor: d, openSlots } of withCounts) {
-      const matched = suggested && d.specialization === suggested;
-      const hasSlots = openSlots === null || openSlots > 0;
-      const viewSlotsBtn = el(
-        "button",
-        { class: "btn-secondary btn-sm", style: "margin-top:8px;", ...(openSlots === 0 ? { disabled: "disabled" } : {}) },
-        openSlots === 0 ? "No open slots" : "View Available Slots"
-      );
-      if (openSlots !== 0) viewSlotsBtn.addEventListener("click", () => loadSlotsForDoctor(d, patientId));
-      cardsHost.appendChild(
-        el("div", { class: "card", style: hasSlots ? "" : "opacity:0.6;" }, [
-          el("div", { class: "chip-row", style: "margin-bottom:6px;" }, [
-            matched ? el("span", { class: "badge badge-good" }, "Recommended match") : null,
-            openSlots > 0 ? el("span", { class: "badge badge-good" }, `${openSlots} open slot${openSlots === 1 ? "" : "s"}`) : null,
-            openSlots === 0 ? el("span", { class: "badge badge-neutral" }, "No slots yet") : null,
-          ]),
-          el("div", { style: "font-weight:650;" }, `${d.first_name} ${d.last_name}`),
-          el("div", { class: "muted", style: "font-size:12.5px;" }, d.specialization),
-          viewSlotsBtn,
-        ])
-      );
-    }
-    doctorResultsHost.appendChild(cardsHost);
-  }
-
-  async function loadSlotsForDoctor(doctor, patientId) {
-    slotsHost.innerHTML = '<div class="loading-line">Loading available slots…</div>';
-    let slots;
-    try {
-      slots = (await api.get(`/schedule/slots/?doctor_id=${doctor.id}&is_booked=false&upcoming_only=true&limit=20`)).items || [];
-    } catch (err) {
-      slotsHost.innerHTML = "";
-      slotsHost.appendChild(el("div", { class: "banner banner-error" }, err.message || "Failed to load slots."));
-      return;
-    }
-    slotsHost.innerHTML = "";
-    slotsHost.appendChild(el("h3", {}, `Available slots — Dr. ${doctor.first_name} ${doctor.last_name}`));
-    if (!slots.length) {
-      slotsHost.appendChild(
-        el("div", { class: "banner banner-warning" },
-          "No open slots for this doctor yet — add availability and generate slots above first."
-        )
-      );
-      return;
-    }
-    const list = el("div", { class: "grid-auto" });
-    for (const slot of slots) {
-      const btn = el("button", { class: "btn-secondary btn-sm" }, formatDateTime(slot.starts_at));
-      btn.addEventListener("click", () => confirmBooking(slot, doctor, patientId));
-      list.appendChild(btn);
-    }
-    slotsHost.appendChild(list);
-  }
-
-  async function confirmBooking(slot, doctor, patientId) {
-    if (!confirm(`Book ${formatDateTime(slot.starts_at)} with Dr. ${doctor.first_name} ${doctor.last_name}?`)) return;
-    try {
-      const appointment = await api.post(`/schedule/slots/${slot.id}/book`, {
-        patient_id: patientId, reason: symptomsInput.value || null,
-      });
-      const patient = await api.get(`/patients/${patientId}`).catch(() => null);
-      renderReceipt({ appointment, doctor, patient, slot });
-      toast("Appointment booked.", "success");
-      slotsHost.innerHTML = "";
-      doctorResultsHost.innerHTML = "";
-      await loadSlots();
-    } catch (err) {
-      toast(err.message || "Booking failed.", "error");
-    }
-  }
-
-  function renderReceipt({ appointment, doctor, patient, slot }) {
-    receiptHost.innerHTML = "";
-    const printBtn = el("button", { class: "btn-secondary btn-sm" }, "Print");
-    printBtn.addEventListener("click", () => window.print());
-    receiptHost.appendChild(
-      el("div", { class: "card" }, [
-        el("div", { class: "card-header" }, [el("h2", {}, "Booking Confirmation"), printBtn]),
-        el("div", { class: "grid-2" }, [
-          infoBlock("Patient", patient ? `${patient.first_name} ${patient.last_name}` : `#${appointment.patient_id}`),
-          infoBlock("Doctor", `${doctor.first_name} ${doctor.last_name} (${doctor.specialization})`),
-          infoBlock("Date & Time", formatDateTime(slot.starts_at)),
-          infoBlock("Reason", appointment.reason || "—"),
-          infoBlock("Appointment ID", `#${appointment.id}`),
-          infoBlock("Status", capitalize(appointment.status)),
-        ]),
-        el("p", { class: "muted", style: "margin-top:10px;" },
-          "This confirmation is visible to the patient, the assigned doctor, and any care_coordinator from the Appointments page — each sees it according to their own access level, no separate delivery step needed."
-        ),
-      ])
-    );
-  }
-
+  // ---- Book an appointment ----
+  // Doctor recommendation + booking now lives in the unified "New Request"
+  // flow (patient/symptoms/medical-record intake shared with referrals) —
+  // see static/js/modules/new_request.js.
+  const newRequestBtn = el("button", { class: "btn-primary" }, "+ Book a New Appointment");
+  newRequestBtn.addEventListener("click", () => navigate("/requests/new"));
   container.appendChild(
     el("div", { class: "card" }, [
       el("div", { class: "card-header" }, [el("h2", {}, "Book an Appointment")]),
-      el("p", { class: "muted" }, "Pick a patient, describe the reason for the visit, and get doctors ranked by specialty match — then pick a real open slot and confirm."),
-      el("div", { class: "toolbar" }, [bookPatientSelect]),
-      el("div", { class: "field" }, [el("label", {}, "Symptoms / Reason"), symptomsInput]),
-      findBtn,
+      el("p", { class: "muted" }, "Use the unified New Request flow to get doctor recommendations and book a slot."),
+      newRequestBtn,
     ])
   );
-  container.appendChild(el("div", {}, [doctorResultsHost]));
-  container.appendChild(el("div", {}, [slotsHost]));
-  container.appendChild(el("div", {}, [receiptHost]));
 
   // ---- Slots table ----
   const slotDoctorSelect = el("select", { style: "max-width:260px;" });

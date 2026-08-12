@@ -1,5 +1,5 @@
 from datetime import datetime, time, timedelta, timezone
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
@@ -9,7 +9,6 @@ from app.api.dependencies.auth import get_current_active_user, require_permissio
 from app.api.dependencies.database import get_async_session
 from app.api.dependencies.pagination import build_page
 from app.core.time_utils import ensure_aware
-from app.models.appointment import Appointment
 from app.models.doctor import Doctor
 from app.models.patient import Patient
 from app.models.schedule import DoctorAvailability, ScheduleSlot
@@ -23,8 +22,9 @@ from app.schemas.schedule import (
     GenerateSlotsRequest,
     ScheduleSlotResponse,
 )
-from app.services.appointment_dedup import reject_if_duplicate_appointment
 from app.services.audit import log_action
+from app.services.record_scope import validate_medical_record_for_patient
+from app.services.scheduling import book_slot_for_patient
 
 router = APIRouter(prefix="/schedule", tags=["schedule"])
 
@@ -50,7 +50,12 @@ async def create_availability(
 @router.get("/availability/", response_model=Page[DoctorAvailabilityResponse], operation_id="list_availability")
 async def list_availability(
     request: Request,
-    doctor_id: Optional[int] = None,
+    # int, not Optional[int]: the fastapi_mcp anyOf/null-injection bug (see
+    # the detailed comment on list_referrals's `q` param) hits every
+    # Optional[X]-typed query param this route surface exposes as an MCP
+    # tool, not just List/str ones — 0 is never a real doctor id, so this is
+    # a behavior-preserving swap for the existing `if doctor_id:` check below.
+    doctor_id: int = 0,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_async_session),
@@ -140,9 +145,24 @@ async def generate_slots(
 @router.get("/slots/", response_model=Page[ScheduleSlotResponse], operation_id="list_slots")
 async def list_slots(
     request: Request,
-    doctor_id: Optional[int] = None,
-    is_booked: Optional[bool] = None,
-    upcoming_only: Optional[bool] = None,
+    # int/bool/str with concrete defaults, not Optional[...] = None — see the
+    # `q` comment on list_referrals for why: fastapi_mcp injects a
+    # contradictory top-level `type` onto any Optional query param's schema,
+    # which rejects the `null` an LLM sends for "don't filter on this."
+    doctor_id: int = 0,
+    # is_booked is genuinely tri-state (unlike doctor_id/upcoming_only below,
+    # which only ever care about truthy-vs-not) — the filtered value is
+    # itself boolean, so `False` ("only unbooked slots") must stay
+    # distinguishable from "not filtering on booked status at all." A plain
+    # `bool = False` default would silently collapse "show me every slot"
+    # into "show me only unbooked slots." A string sentinel keeps that
+    # three-way distinction without reintroducing Optional/anyOf: the wire
+    # format doesn't change (query strings were always literal "true"/
+    # "false" here — see static/js/modules/schedule.js's bookedSelect and
+    # httpx's own bool->query-param serialization, both already lowercase
+    # "true"/"false").
+    is_booked: str = "",
+    upcoming_only: bool = False,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_async_session),
@@ -159,8 +179,10 @@ async def list_slots(
     base_query = select(ScheduleSlot).where(ScheduleSlot.deleted_at.is_(None))
     if doctor_id:
         base_query = base_query.where(ScheduleSlot.doctor_id == doctor_id)
-    if is_booked is not None:
-        base_query = base_query.where(ScheduleSlot.is_booked == is_booked)
+    if is_booked.lower() == "true":
+        base_query = base_query.where(ScheduleSlot.is_booked.is_(True))
+    elif is_booked.lower() == "false":
+        base_query = base_query.where(ScheduleSlot.is_booked.is_(False))
     if upcoming_only:
         base_query = base_query.where(ScheduleSlot.starts_at >= datetime.now(timezone.utc))
 
@@ -193,22 +215,12 @@ async def book_slot(
         raise HTTPException(status.HTTP_409_CONFLICT, "This slot is in the past and can no longer be booked")
     if not (await db.execute(select(Patient).where(Patient.id == data.patient_id, Patient.deleted_at.is_(None)))).scalar_one_or_none():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Patient not found")
+    if data.medical_record_id is not None:
+        await validate_medical_record_for_patient(db, data.medical_record_id, data.patient_id)
 
-    await reject_if_duplicate_appointment(
-        db, patient_id=data.patient_id, doctor_id=slot.doctor_id, reason=data.reason
+    appointment = await book_slot_for_patient(
+        db, slot=slot, patient_id=data.patient_id, reason=data.reason, medical_record_id=data.medical_record_id,
     )
-
-    appointment = Appointment(
-        patient_id=data.patient_id,
-        doctor_id=slot.doctor_id,
-        appointment_datetime=slot.starts_at,
-        reason=data.reason,
-    )
-    db.add(appointment)
-    await db.flush()
-
-    slot.is_booked = True
-    slot.appointment_id = appointment.id
 
     await log_action(
         db, actor_id=current_user.id, action="schedule.slot.book",

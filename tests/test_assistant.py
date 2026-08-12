@@ -9,6 +9,7 @@ from httpx import AsyncClient
 
 from app.agents.assistant_graph import ROLE_TOOL_ALLOWLIST, resolve_role_for_tools
 from app.api.routes.ai.assistant import faq_fallback
+from app.main import app
 
 
 async def test_chat_requires_authentication(test_client: AsyncClient):
@@ -23,6 +24,33 @@ async def test_chat_falls_back_to_faq_when_no_llm_configured(test_client: AsyncC
     )
     assert response.status_code == 200
     assert "status" in response.json()["reply"].lower()
+
+
+async def test_chat_returns_friendly_message_instead_of_500_when_the_agent_errors(
+    test_client: AsyncClient, auth_headers, monkeypatch
+):
+    """Previously any exception during graph.ainvoke (e.g. exactly the
+    tool-call schema validation failure the anyOf/null bug caused — see
+    test_no_assistant_tool_param_has_a_nullable_schema) bubbled up as a raw,
+    unhandled 500 — "Sorry, something went wrong: Internal Server Error"
+    with no way to recover except reloading. Now the chat endpoint catches
+    it and keeps the conversation alive instead."""
+
+    class _FailingGraph:
+        async def ainvoke(self, *args, **kwargs):
+            raise RuntimeError("simulated tool-call validation failure")
+
+    async def _fake_build_assistant_graph(role, token):
+        return _FailingGraph()
+
+    monkeypatch.setattr("app.api.routes.ai.assistant.build_assistant_graph", _fake_build_assistant_graph)
+
+    response = await test_client.post(
+        "/assistant/chat", headers=auth_headers,
+        json={"message": "any referral pending", "session_id": "s1"},
+    )
+    assert response.status_code == 200
+    assert "sorry" in response.json()["reply"].lower()
 
 
 def test_faq_fallback_matches_known_keywords():
@@ -86,6 +114,36 @@ def test_patient_context_tools_scoped_correctly_per_role():
     assert ROLE_TOOL_ALLOWLIST["payer_admin"] & {
         "get_patient_context", "list_appointments", "list_medical_records", "get_my_patient_context"
     } == set()
+
+
+def test_no_assistant_tool_param_has_a_nullable_schema():
+    """The actual bug a patient hit asking the assistant "any referral
+    pending" / "list_referrals" q param rejecting `null`: fastapi_mcp
+    injects a contradictory top-level `type` onto any query param whose
+    schema is `anyOf: [X, null]` (i.e. any `Optional[X] = None` FastAPI
+    param) — the resulting tool schema requires the value be BOTH
+    `anyOf [X, null]` AND `type: X`, so an LLM's normal `null` (its way of
+    saying "omit this optional filter") gets rejected as "expected X, but
+    got null". Fixed for every currently-exposed tool by giving each such
+    param a concrete, type-matching default (see the comments on
+    list_referrals/list_appointments/list_medical_records/list_slots/
+    list_availability). This test inspects the REAL generated MCP tool
+    schemas (not just today's fixed routes) so a future PR that adds a new
+    `Optional[X] = None` query param to an assistant-exposed route fails
+    here instead of shipping a live assistant 500."""
+    from fastapi_mcp.openapi.convert import convert_openapi_to_mcp_tools
+
+    exposed_tool_names = set().union(*ROLE_TOOL_ALLOWLIST.values())
+    tools, _ = convert_openapi_to_mcp_tools(app.openapi())
+    exposed_tools = [t for t in tools if t.name in exposed_tool_names]
+    assert exposed_tools, "expected at least one exposed tool to check"
+
+    offenders = []
+    for tool in exposed_tools:
+        for prop_name, prop_schema in (tool.inputSchema.get("properties") or {}).items():
+            if "anyOf" in prop_schema:
+                offenders.append(f"{tool.name}.{prop_name}")
+    assert not offenders, f"nullable (anyOf) MCP tool params found — will reject a legitimate null: {offenders}"
 
 
 def test_only_care_coordinator_gets_the_timeline_and_analytics_tools():

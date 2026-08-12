@@ -81,6 +81,25 @@ export const api = {
   upload: (path, formData) => request("POST", path, { body: formData, isForm: true }),
 };
 
+/** A plain `<a href="/some/api/path">` can't carry the Authorization header,
+ * so a file download (a referral/medical-record document) needs its own
+ * authenticated fetch — pulls the bytes as a Blob, then triggers a normal
+ * browser download/open via a throwaway object URL. */
+export async function downloadFile(path, filename) {
+  const { accessToken } = getState();
+  const res = await fetch(path, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
+  if (!res.ok) throw await toApiError(res);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "download";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** Native EventSource can't carry an Authorization header, so referral
  * status events are read via a manual fetch + ReadableStream instead — with
  * our own reconnect backoff, since that's not free without EventSource. */

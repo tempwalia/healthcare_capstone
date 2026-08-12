@@ -1,5 +1,5 @@
-from app.agents import mcp_clients
-from app.agents.audit import call_tool_audited
+from langgraph.types import interrupt
+
 from app.agents.state import ReferralState
 from app.database import session as db_session
 from app.events.outbox import write_outbox_event
@@ -7,6 +7,7 @@ from app.models.doctor import Doctor
 from app.models.patient import Patient
 from app.models.referral import ReferralRequest, ReferralWorkflowStatus
 from app.services.audit import log_action
+from app.services.eligibility import check_eligibility
 from app.services.notifications import create_notification
 
 
@@ -15,13 +16,10 @@ async def eligibility_node(state: ReferralState) -> dict:
         referral = await db.get(ReferralRequest, state["referral_id"])
         patient = await db.get(Patient, referral.patient_id)
 
-        tools = await mcp_clients.get_tools(mcp_clients.ELIGIBILITY_SERVERS, ["check_eligibility"])
-        result = await call_tool_audited(
-            db, referral_id=referral.id, tool=tools["check_eligibility"],
-            args={
-                "insurance_policy_number": patient.insurance_policy_number or "",
-                "procedure_code": (state.get("diagnosis_codes") or ["UNKNOWN"])[0],
-            },
+        result = await check_eligibility(
+            db, referral_id=referral.id,
+            insurance_policy_number=patient.insurance_policy_number,
+            procedure_code=(state.get("diagnosis_codes") or ["UNKNOWN"])[0],
         )
 
         referral.status = (
@@ -54,14 +52,24 @@ async def eligibility_node(state: ReferralState) -> dict:
                 )
 
         await db.commit()
-        return {"eligibility": result, "status": referral.status}
+        return {
+            "eligibility": result,
+            "status": referral.status,
+            "specialist_preselected": referral.specialist_id is not None,
+        }
 
 
 async def escalate_eligibility_node(state: ReferralState) -> dict:
     """Reached when `eligibility_node` denies coverage — the referral is
-    already `eligibility_denied`; this node's job is just to get a human's
-    attention. Resuming this path (a coordinator override endpoint) is out
-    of Phase 6's scope, so the graph run simply ends here."""
+    already `eligibility_denied`. Gets a human's attention, then genuinely
+    pauses here (same `interrupt()` pattern as `await_specialist_approval`)
+    instead of dead-ending the graph run: a care coordinator reviews the
+    denial (comments, optionally attaches a document — see
+    POST /referral/requests/{id}/notes and the existing document upload
+    route) and either resolves it themselves or resumes via
+    POST /referral-workflow/{id}/override-eligibility, which continues on to
+    `recommend_specialist` — the exact same modular step a normally-eligible
+    referral goes through, not a separate parallel path."""
     async with db_session.async_session() as db:
         await log_action(
             db, actor_id=None, action="referral.eligibility.escalated",
@@ -74,4 +82,5 @@ async def escalate_eligibility_node(state: ReferralState) -> dict:
         )
         await db.commit()
 
-    return {"status": ReferralWorkflowStatus.ELIGIBILITY_DENIED.value}
+    interrupt({"referral_id": state["referral_id"], "eligibility": state.get("eligibility"), "reason": "eligibility_denied"})
+    return {"status": ReferralWorkflowStatus.AWAITING_SPECIALIST_APPROVAL.value}

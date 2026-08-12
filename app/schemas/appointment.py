@@ -18,6 +18,9 @@ class AppointmentBase(BaseModel):
     reminder_sent: Optional[bool] = False
     follow_up_required: Optional[bool] = False
     referral_id: Optional[int] = None
+    # An existing medical record the requester attached at booking time —
+    # see app.services.record_scope.validate_medical_record_for_patient.
+    medical_record_id: Optional[int] = None
 
 
 class AppointmentCreate(AppointmentBase):

@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
@@ -11,11 +10,13 @@ from app.api.dependencies.database import get_async_session
 from app.api.dependencies.pagination import build_page
 from app.models.appointment import Appointment, AppointmentStatusEnum
 from app.models.doctor import Doctor
+from app.models.medical_record import MedicalRecord, MedicalRecordDocument
 from app.models.patient import Patient
 from app.models.referral import ReferralOutcome
 from app.models.user import User
 from app.schemas.appointment import AppointmentCreate, AppointmentResponse, AppointmentUpdate
 from app.schemas.common import Page
+from app.schemas.medical_record import AttachedMedicalRecordResponse
 from app.schemas.referral import ReferralOutcomeCreate, ReferralOutcomeResponse
 from app.services.appointment_dedup import reject_if_duplicate_appointment
 from app.services.audit import log_action
@@ -78,8 +79,14 @@ async def get_appointments(
     request: Request,
     skip: int = 0,
     limit: int = 100,
-    doctor_id: Optional[int] = None,
-    upcoming_only: Optional[bool] = None,
+    # int/bool with concrete defaults, not Optional[...] = None: fastapi_mcp
+    # injects a contradictory top-level `type` onto any Optional query
+    # param's schema (see the detailed comment on list_referrals's `q`
+    # param), which rejects the `null` an LLM sends for "don't filter on
+    # this." 0 is never a real doctor id, so switching the check below from
+    # `is not None` to truthy is behavior-preserving.
+    doctor_id: int = 0,
+    upcoming_only: bool = False,
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_active_user),
 ):
@@ -93,7 +100,7 @@ async def get_appointments(
     base_query = select(Appointment).where(Appointment.deleted_at.is_(None))
     if scope is not None:
         base_query = base_query.where(scope)
-    if doctor_id is not None:
+    if doctor_id:
         base_query = base_query.where(Appointment.doctor_id == doctor_id)
     if upcoming_only:
         base_query = base_query.where(Appointment.appointment_datetime >= datetime.now(timezone.utc))
@@ -260,3 +267,33 @@ async def get_appointment_outcome(
     if not outcome:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No outcome recorded for this appointment")
     return outcome
+
+
+@router.get("/{appointment_id}/attached-record", response_model=AttachedMedicalRecordResponse)
+async def get_appointment_attached_record(
+    appointment_id: int,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """The medical record (if any) the requester picked or uploaded when
+    booking this appointment directly — visibility is entirely derived from
+    being able to see the appointment itself (patient, assigned doctor, or
+    staff), not the record's own doctor_id. See
+    app.services.document_access — this is the appointment-side counterpart
+    to GET /referral/requests/{id}/attached-record."""
+    appointment = await _get_scoped_appointment(db, current_user, appointment_id)
+    if appointment.medical_record_id is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No medical record attached to this appointment")
+
+    record = await db.get(MedicalRecord, appointment.medical_record_id)
+    if record is None or record.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attached medical record not found")
+
+    documents = (
+        await db.execute(
+            select(MedicalRecordDocument)
+            .where(MedicalRecordDocument.medical_record_id == record.id)
+            .order_by(MedicalRecordDocument.created_at)
+        )
+    ).scalars().all()
+    return {"record": record, "documents": documents}

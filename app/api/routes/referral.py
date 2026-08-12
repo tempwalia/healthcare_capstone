@@ -1,18 +1,21 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_active_user, require_permission
 from app.api.dependencies.database import get_async_session
 from app.api.dependencies.pagination import build_page
+from app.core.time_utils import ensure_aware
 from app.events import broadcaster
 from app.events.outbox import write_outbox_event
 from app.models.doctor import Doctor
+from app.models.medical_record import MedicalRecord, MedicalRecordDocument
 from app.models.outbox import OutboxEvent
 from app.models.patient import Patient
 from app.models.referral import (
@@ -22,8 +25,10 @@ from app.models.referral import (
     ReferralWorkflowStatus,
     SpecialistNote,
 )
+from app.models.schedule import ScheduleSlot
 from app.models.user import User
 from app.schemas.common import Page
+from app.schemas.medical_record import AttachedMedicalRecordResponse
 from app.schemas.referral import (
     ReferralDocumentResponse,
     ReferralOutcomeCreate,
@@ -31,12 +36,13 @@ from app.schemas.referral import (
     ReferralRequestCreate,
     ReferralRequestResponse,
     ReferralRequestUpdate,
+    SpecialistNoteCreate,
     SpecialistNoteResponse,
     TimelineEventResponse,
 )
 from app.services.audit import log_action
 from app.services.notifications import create_notification
-from app.services.record_scope import _granted_permissions
+from app.services.record_scope import _granted_permissions, validate_medical_record_for_patient
 from app.services.referral_outcome import generate_completion_summary
 from app.services.referral_scope import referral_visibility_filter
 from app.services.referral_workflow import run_referral_workflow
@@ -101,6 +107,20 @@ async def submit_referral(
         await db.execute(select(Doctor).where(Doctor.id == data.specialist_id, Doctor.deleted_at.is_(None)))
     ).scalar_one_or_none():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Specialist not found")
+    if data.medical_record_id is not None:
+        await validate_medical_record_for_patient(db, data.medical_record_id, data.patient_id)
+    if data.preferred_slot_id is not None:
+        if data.specialist_id is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "preferred_slot_id requires a specialist_id")
+        slot = await db.get(ScheduleSlot, data.preferred_slot_id)
+        if slot is None or slot.deleted_at is not None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Preferred slot not found")
+        if slot.doctor_id != data.specialist_id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Preferred slot does not belong to the selected specialist")
+        if slot.is_booked:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Preferred slot is already booked")
+        if ensure_aware(slot.starts_at) < datetime.now(timezone.utc):
+            raise HTTPException(status.HTTP_409_CONFLICT, "Preferred slot is in the past")
 
     referral = ReferralRequest(**data.model_dump(), status=ReferralWorkflowStatus.SUBMITTED.value)
     db.add(referral)
@@ -136,7 +156,17 @@ async def list_referrals(
     # no anyOf, so that injection is a no-op and the field stays legitimately
     # optional (not required, empty list treated as "no filter" below).
     status_filter: List[str] = Query([]),
-    q: Optional[str] = None,
+    # Same fastapi_mcp anyOf/null-injection bug as status_filter above, just
+    # for a plain Optional[str] this time — get_single_param_type_from_schema
+    # (app/../.venv/Lib/site-packages/fastapi_mcp/openapi/utils.py) strips
+    # "null" out of `anyOf: [string, null]` and injects the remaining
+    # "string" as a contradictory top-level `type`, so an LLM's explicit
+    # `q: null` (its normal way of saying "no search term") gets rejected as
+    # "expected string, but got null". This is the exact bug a patient hit
+    # asking the assistant "any referral pending" / a bare status question —
+    # `q: str = Query("")` keeps the schema a plain `{"type": "string"}` with
+    # no anyOf, so the injection is a no-op.
+    q: str = Query(""),
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_active_user),
 ):
@@ -280,6 +310,19 @@ async def upload_referral_document(
         extraction_status="queued",
     )
     db.add(document)
+    # Every referral document also lands on the patient's own medical
+    # record — "attached to the specific referral AND the patient record",
+    # not just filed under the referral where only referral-scoped staff
+    # would ever see it again. doctor_id is the referring doctor (always a
+    # real FK on the referral itself); a patient/coordinator uploading
+    # during eligibility-denial review goes through this exact same path.
+    db.add(MedicalRecord(
+        patient_id=referral.patient_id,
+        doctor_id=referral.referring_doctor_id,
+        visit_date=datetime.now(timezone.utc),
+        record_type="referral_document",
+        notes=f"Document \"{file.filename or 'upload'}\" uploaded for referral #{referral.id}.",
+    ))
     await db.flush()
     await log_action(
         db, actor_id=current_user.id, action="referral.document.upload",
@@ -295,13 +338,17 @@ async def upload_referral_document(
     # does arrive while the referral is still in one of these early states —
     # not yet past specialist recommendation, so nothing's paused on a
     # pending human-in-the-loop decision yet — re-running picks it up for
-    # real extraction instead of leaving it un-processed.
+    # real extraction instead of leaving it un-processed. Deliberately
+    # excludes ELIGIBILITY_DENIED: that status now means the workflow is
+    # genuinely paused (interrupt()) waiting on a coordinator's explicit
+    # POST /referral-workflow/{id}/override-eligibility decision, not a
+    # silent auto-retry — a document uploaded during review attaches here
+    # (and to the patient record above) without side-stepping that review.
     _REPROCESSABLE_ON_UPLOAD = {
         ReferralWorkflowStatus.SUBMITTED.value,
         ReferralWorkflowStatus.INTAKE_PROCESSING.value,
         ReferralWorkflowStatus.AWAITING_DOCUMENTS.value,
         ReferralWorkflowStatus.ELIGIBILITY_CHECKING.value,
-        ReferralWorkflowStatus.ELIGIBILITY_DENIED.value,
     }
     if referral.status in _REPROCESSABLE_ON_UPLOAD:
         background_tasks.add_task(run_referral_workflow, referral.id)
@@ -326,6 +373,58 @@ async def list_referral_documents(
     return result.scalars().all()
 
 
+@router.get("/requests/{referral_id}/documents/{document_id}/download")
+async def download_referral_document(
+    referral_id: int,
+    document_id: int,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Lets anyone who can already see this referral (referring doctor,
+    assigned specialist, the patient, or staff) actually open an uploaded
+    document, not just see its filename in the list — a doctor inspecting a
+    referral needs to read the referral letter/imaging report, not just
+    know one exists."""
+    referral = await _get_scoped_referral(db, current_user, referral_id)
+    document = await db.get(ReferralDocument, document_id)
+    if document is None or document.referral_request_id != referral.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+
+    path = Path(document.storage_path)
+    if not path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found on disk")
+    return FileResponse(path, filename=document.filename)
+
+
+@router.get("/requests/{referral_id}/attached-record", response_model=AttachedMedicalRecordResponse)
+async def get_referral_attached_record(
+    referral_id: int,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """The medical record (if any) the requester picked or uploaded when
+    creating this referral — separate from the referral's own
+    ReferralDocuments (uploaded via /documents above). Visibility is
+    entirely derived from being able to see the referral itself, not the
+    record's own doctor_id — see app.services.document_access."""
+    referral = await _get_scoped_referral(db, current_user, referral_id)
+    if referral.medical_record_id is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No medical record attached to this referral")
+
+    record = await db.get(MedicalRecord, referral.medical_record_id)
+    if record is None or record.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attached medical record not found")
+
+    documents = (
+        await db.execute(
+            select(MedicalRecordDocument)
+            .where(MedicalRecordDocument.medical_record_id == record.id)
+            .order_by(MedicalRecordDocument.created_at)
+        )
+    ).scalars().all()
+    return {"record": record, "documents": documents}
+
+
 @router.get(
     "/requests/{referral_id}/notes",
     response_model=List[SpecialistNoteResponse],
@@ -341,6 +440,42 @@ async def list_specialist_notes(
         select(SpecialistNote).where(SpecialistNote.referral_request_id == referral.id)
     )
     return result.scalars().all()
+
+
+@router.post(
+    "/requests/{referral_id}/notes",
+    response_model=SpecialistNoteResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_specialist_note(
+    referral_id: int,
+    data: SpecialistNoteCreate,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Manual comment on a referral — same gate as editing the referral
+    itself (_EDIT_PERMISSIONS): coordinator/specialist/admin, not the
+    patient or referring PCP self-service side. Needed for the eligibility-
+    denial review flow (a coordinator explains why they're overriding a
+    denial), but not restricted to that status — any referral can carry
+    notes, same as the pre-existing workflow-generated ones."""
+    referral = await _get_scoped_referral(db, current_user, referral_id)
+    granted = await _granted_permissions(db, current_user)
+    if not granted & _EDIT_PERMISSIONS:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Adding a note requires referral:approve, referral:override, or admin privileges",
+        )
+
+    note = SpecialistNote(referral_request_id=referral.id, note=data.note)
+    db.add(note)
+    await log_action(
+        db, actor_id=current_user.id, action="referral.note.create",
+        resource_type="referral_request", resource_id=referral.id,
+    )
+    await db.commit()
+    await db.refresh(note)
+    return note
 
 
 @router.get(

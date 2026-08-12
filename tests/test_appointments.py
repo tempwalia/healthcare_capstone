@@ -5,7 +5,7 @@ app/api/routes/appointments.py::get_appointments."""
 from httpx import AsyncClient
 
 from tests.test_record_scope import _reset_roles
-from tests.test_referral import _grant_role, _link_doctor_to_user, _link_patient_to_user
+from tests.test_referral import _grant_role, _link_doctor_to_user, _link_patient_to_user, _register_and_login
 
 
 async def test_doctors_me_404s_for_an_unlinked_account(test_client: AsyncClient, test_session, test_user_data, auth_headers):
@@ -176,3 +176,80 @@ async def test_patient_can_view_but_not_record_their_appointment_outcome(
     can_view = await test_client.get(f"/appointments/{appointment['id']}/outcome", headers=auth_headers)
     assert can_view.status_code == 200
     assert can_view.json()["diagnosis"] == "Seasonal allergies"
+
+
+async def test_appointment_attached_record_404_when_none_attached(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
+):
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
+    doctor = (await test_client.post("/doctors/", json=test_doctor_data, headers=auth_headers)).json()
+    appointment = (await test_client.post(
+        "/appointments/",
+        json={"patient_id": patient["id"], "doctor_id": doctor["id"], "appointment_datetime": "2026-09-01T10:00:00Z"},
+        headers=auth_headers,
+    )).json()
+
+    response = await test_client.get(f"/appointments/{appointment['id']}/attached-record", headers=auth_headers)
+    assert response.status_code == 404
+
+
+async def test_appointment_attached_record_visible_to_assigned_doctor_not_owning_the_record(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
+):
+    """Same gap as the referral-side test — a patient's doctor-less quick
+    upload (doctor_id=None) is only visible to the assigned doctor because
+    it's attached to an appointment they're party to, not because they own
+    the record."""
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
+    assigned_doctor = (await test_client.post("/doctors/", json=test_doctor_data, headers=auth_headers)).json()
+    unrelated_data = {**test_doctor_data, "email": "appt.unrelated@example.com", "license_number": "MD-APPT-UNREL-1"}
+    unrelated_doctor = (await test_client.post("/doctors/", json=unrelated_data, headers=auth_headers)).json()
+    await test_client.post(
+        "/schedule/availability/",
+        json={"doctor_id": assigned_doctor["id"], "weekday": 0, "start_time": "09:00", "end_time": "10:00", "slot_minutes": 30},
+        headers=auth_headers,
+    )
+    slots = (await test_client.post(
+        "/schedule/slots/generate", json={"doctor_id": assigned_doctor["id"], "days_ahead": 14}, headers=auth_headers
+    )).json()
+
+    await _reset_roles(test_session, test_user_data["username"])
+    await _grant_role(test_session, test_user_data["username"], "patient")
+    await _link_patient_to_user(test_session, patient["id"], test_user_data["username"])
+    uploaded = (await test_client.post(
+        "/medical-records/quick-upload",
+        headers=auth_headers,
+        data={"patient_id": str(patient["id"]), "record_type": "lab_result"},
+        files={"file": ("appt_bloodwork.pdf", b"appointment lab results", "application/pdf")},
+    )).json()
+    booked = (await test_client.post(
+        f"/schedule/slots/{slots[0]['id']}/book",
+        json={"patient_id": patient["id"], "medical_record_id": uploaded["medical_record_id"]},
+        headers=auth_headers,
+    )).json()
+
+    await _reset_roles(test_session, test_user_data["username"])
+    await _grant_role(test_session, test_user_data["username"], "specialist")
+    await _link_doctor_to_user(test_session, assigned_doctor["id"], test_user_data["username"])
+
+    attached = await test_client.get(f"/appointments/{booked['id']}/attached-record", headers=auth_headers)
+    assert attached.status_code == 200
+    body = attached.json()
+    assert body["record"]["id"] == uploaded["medical_record_id"]
+    document_id = body["documents"][0]["id"]
+
+    downloaded = await test_client.get(f"/medical-records/documents/{document_id}/download", headers=auth_headers)
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"appointment lab results"
+
+    # A separate account — Doctor.user_id is unique, so the shared test user
+    # (already linked to `assigned_doctor` above) can't also link to a
+    # second doctor.
+    unrelated_headers = await _register_and_login(test_client, "appt_unrelated_specialist")
+    await _grant_role(test_session, "appt_unrelated_specialist", "specialist")
+    await _link_doctor_to_user(test_session, unrelated_doctor["id"], "appt_unrelated_specialist")
+
+    blocked = await test_client.get(f"/appointments/{booked['id']}/attached-record", headers=unrelated_headers)
+    assert blocked.status_code == 404

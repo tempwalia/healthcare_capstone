@@ -40,6 +40,9 @@ class Appointment(Base, SoftDeleteMixin):
     # appointment created through the manual /appointments/ or "Book an
     # Appointment" flows.
     referral_id = Column(Integer, ForeignKey("referral_requests.id"), nullable=True)
+    # The existing medical record (if any) the requester attached at
+    # booking time via the unified "New Request" flow.
+    medical_record_id = Column(Integer, ForeignKey("medical_records.id"), nullable=True)
 
     patient = relationship("Patient", back_populates="appointments")
     doctor = relationship("Doctor", back_populates="appointments")

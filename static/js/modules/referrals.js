@@ -1,4 +1,4 @@
-import { api, streamReferralEvents } from "../api.js";
+import { api, downloadFile, streamReferralEvents } from "../api.js";
 import { hasPermission } from "../state.js";
 import { navigate } from "../router.js";
 import { renderTable, renderPager } from "../components/table.js";
@@ -112,6 +112,20 @@ function infoBlock(label, value) {
   ]);
 }
 
+// Shared by the referral-document and attached-medical-record-document
+// tables below — actually opens/downloads the file, not just shows its name.
+function downloadButton(path, filename) {
+  const btn = el("button", { class: "btn-ghost btn-sm" }, "Download");
+  btn.addEventListener("click", async () => {
+    try {
+      await downloadFile(path, filename);
+    } catch (err) {
+      toast(err.message || "Download failed.", "error");
+    }
+  });
+  return btn;
+}
+
 export async function renderList(container) {
   container.innerHTML = "";
   const local = { skip: 0, limit: 20, total: 0, items: [], statusFilter: "", q: "" };
@@ -143,8 +157,8 @@ export async function renderList(container) {
     statusSelect, el("div", { class: "search-box" }, [searchInput]), el("div", { class: "spacer" }),
   ]);
   if (hasPermission("referral:create")) {
-    const newBtn = el("button", { class: "btn-primary" }, isSelfServicePatient ? "+ Request a Referral" : "+ New Referral");
-    newBtn.addEventListener("click", openCreateForm);
+    const newBtn = el("button", { class: "btn-primary" }, isSelfServicePatient ? "+ Request a Referral" : "+ New Request");
+    newBtn.addEventListener("click", () => navigate("/requests/new"));
     toolbar.appendChild(newBtn);
   }
 
@@ -219,72 +233,6 @@ export async function renderList(container) {
     });
   }
 
-  async function openCreateForm() {
-    let ownPatient = null;
-    if (isSelfServicePatient) {
-      try {
-        const page = await api.get("/patients/?limit=1");
-        ownPatient = (page.items || [])[0] || null;
-      } catch {
-        alert("Couldn't load your patient record — try again in a moment.");
-        return;
-      }
-      if (!ownPatient) {
-        // A blocking alert, not a toast: this is a hard stop (there's no
-        // usable form to show without a linked record), and a toast that
-        // auto-dismisses in ~4s is too easy to miss for a "here's what to
-        // do next" message.
-        alert(
-          "Your account isn't linked to a patient record yet, so there's nothing to auto-fill.\n\n" +
-          "Ask an admin to link one: Admin panel → find your account → \"Link to Patient\"."
-        );
-        return;
-      }
-    }
-
-    const patientField = isSelfServicePatient
-      ? {
-          name: "patient_id", label: "Patient", type: "select", required: true, disabled: true,
-          options: [{ value: ownPatient.id, label: `${ownPatient.first_name} ${ownPatient.last_name} (You)` }],
-        }
-      : {
-          name: "patient_id", label: "Patient", type: "select-async", source: "/patients", required: true,
-          optionLabel: (p) => `${p.first_name} ${p.last_name} (#${p.id})`,
-        };
-
-    openModal({
-      title: isSelfServicePatient ? "Request a Referral" : "New Referral",
-      submitLabel: "Submit Referral",
-      fields: [
-        patientField,
-        {
-          name: "referring_doctor_id",
-          label: isSelfServicePatient ? "Your Primary Care Doctor" : "Referring Doctor",
-          type: "select-async", source: "/doctors", required: true,
-          optionLabel: (d) => `${d.first_name} ${d.last_name} (#${d.id})`,
-        },
-        {
-          name: "specialist_id", label: "Specialist (optional)", type: "select-async", source: "/doctors",
-          optionLabel: (d) => `${d.first_name} ${d.last_name} — ${d.specialization} (#${d.id})`,
-        },
-        { name: "request_date", label: "Request Date", type: "date", required: true },
-        { name: "reason", label: "Reason", type: "textarea" },
-        { name: "preferred_location", label: "Preferred Location", type: "text" },
-        { name: "target_wait_days", label: "Target Wait (days)", type: "number" },
-      ],
-      initial: {
-        request_date: new Date().toISOString().slice(0, 10),
-        target_wait_days: 14,
-        ...(isSelfServicePatient ? { patient_id: ownPatient.id } : {}),
-      },
-      onSubmit: async (payload) => {
-        const created = await api.post("/referral/requests/", payload);
-        toast("Referral submitted — workflow started.", "success");
-        navigate(`/referrals/${created.id}`);
-      },
-    });
-  }
-
   await load();
 }
 
@@ -356,6 +304,7 @@ export async function renderDetail(container, { id }) {
     const progress = REFERRAL_PROGRESS_INFO[referral.status];
     if (progress) {
       const needsMyApproval = referral.status === "awaiting_specialist_approval" && hasPermission("referral:approve");
+      const needsEligibilityReview = referral.status === "eligibility_denied";
       const bannerChildren = [
         el("div", { style: "font-weight:650;margin-bottom:2px;" }, `Current step: ${progress.label}`),
         el("div", { style: "font-size:12.5px;" }, `Waiting on: ${progress.waitingOn}`),
@@ -372,9 +321,20 @@ export async function renderDetail(container, { id }) {
           renderPanel();
         });
         bannerChildren.push(reviewBtn);
+      } else if (needsEligibilityReview) {
+        const reviewBtn = el(
+          "button", { class: "btn-primary btn-sm", style: "margin-top:8px;" },
+          hasPermission("referral:override") ? "Review denial →" : "View denial details →"
+        );
+        reviewBtn.addEventListener("click", () => {
+          activeTab = "workflow";
+          renderTabs();
+          renderPanel();
+        });
+        bannerChildren.push(reviewBtn);
       }
       headerHost.appendChild(
-        el("div", { class: `banner ${needsMyApproval ? "banner-warning" : "banner-info"}`, style: "margin-bottom:14px;" }, bannerChildren)
+        el("div", { class: `banner ${needsMyApproval || needsEligibilityReview ? "banner-warning" : "banner-info"}`, style: "margin-bottom:14px;" }, bannerChildren)
       );
     }
 
@@ -522,37 +482,201 @@ export async function renderDetail(container, { id }) {
           { key: "created_at", label: "Uploaded", format: (d) => formatDateTime(d.created_at) },
         ],
         rows: docs,
+        actions: (d) => [downloadButton(`/referral/requests/${referral.id}/documents/${d.id}/download`, d.filename)],
         emptyMessage: "No documents uploaded yet.",
       });
     } catch (err) {
       listHost.appendChild(el("div", { class: "banner banner-error" }, err.message || "Failed to load documents."));
     }
+
+    // The medical record the requester picked or uploaded when creating
+    // this referral (via the unified New Request flow) — separate from the
+    // ReferralDocuments above, which only cover post-creation uploads.
+    const attachedHost = el("div", { style: "margin-top:18px;" });
+    panelHost.appendChild(attachedHost);
+    try {
+      const attached = await api.get(`/referral/requests/${referral.id}/attached-record`);
+      attachedHost.appendChild(el("h3", {}, "Attached Medical Record"));
+      attachedHost.appendChild(
+        el("div", { class: "grid-3", style: "margin-bottom:10px;" }, [
+          infoBlock("Type", attached.record.record_type || "—"),
+          infoBlock("Diagnosis / Symptoms", attached.record.diagnosis || attached.record.symptoms || "—"),
+          infoBlock("Visit Date", formatDateTime(attached.record.visit_date)),
+        ])
+      );
+      const docsHost = el("div", {});
+      attachedHost.appendChild(docsHost);
+      renderTable(docsHost, {
+        columns: [
+          { key: "filename", label: "Filename" },
+          { key: "created_at", label: "Uploaded", format: (d) => formatDateTime(d.created_at) },
+        ],
+        rows: attached.documents,
+        actions: (d) => [downloadButton(`/medical-records/documents/${d.id}/download`, d.filename)],
+        emptyMessage: "No documents on this record.",
+      });
+    } catch {
+      // No medical record attached (404) — nothing to show, not an error.
+    }
   }
 
   async function renderNotesTab() {
     panelHost.innerHTML = "";
+    const canComment = hasPermission("referral:approve") || hasPermission("referral:override") || hasPermission("admin:*");
     panelHost.appendChild(
-      el("p", { class: "muted" }, "Specialist notes are generated by the referral workflow — there's no manual \"add note\" action.")
+      el("p", { class: "muted" }, canComment
+        ? "Some notes are generated automatically by the referral workflow; you can also add your own."
+        : "Notes are generated by the referral workflow and added by coordination staff.")
     );
-    const listHost = el("div", {});
+
+    const listHost = el("div", { style: "margin-bottom:14px;" });
     panelHost.appendChild(listHost);
-    try {
-      const notes = await api.get(`/referral/requests/${referral.id}/notes`);
-      if (!notes.length) {
-        listHost.appendChild(el("div", { class: "empty-state" }, "No notes yet."));
-      } else {
-        for (const note of notes) {
-          listHost.appendChild(
-            el("div", { class: "card" }, [
-              el("div", { class: "muted", style: "font-size:11.5px;margin-bottom:6px;" }, formatDateTime(note.created_at)),
-              el("div", {}, note.note),
-            ])
-          );
+
+    async function loadNotes() {
+      listHost.innerHTML = "";
+      try {
+        const notes = await api.get(`/referral/requests/${referral.id}/notes`);
+        if (!notes.length) {
+          listHost.appendChild(el("div", { class: "empty-state" }, "No notes yet."));
+        } else {
+          for (const note of notes) {
+            listHost.appendChild(
+              el("div", { class: "card" }, [
+                el("div", { class: "muted", style: "font-size:11.5px;margin-bottom:6px;" }, formatDateTime(note.created_at)),
+                el("div", {}, note.note),
+              ])
+            );
+          }
         }
+      } catch (err) {
+        listHost.appendChild(el("div", { class: "banner banner-error" }, err.message || "Failed to load notes."));
       }
-    } catch (err) {
-      listHost.appendChild(el("div", { class: "banner banner-error" }, err.message || "Failed to load notes."));
     }
+
+    if (canComment) {
+      const textarea = el("textarea", { rows: "3", placeholder: "Add a note visible to coordination staff…" });
+      const addBtn = el("button", { class: "btn-primary btn-sm" }, "Add Note");
+      addBtn.addEventListener("click", async () => {
+        const note = textarea.value.trim();
+        if (!note) return;
+        addBtn.disabled = true;
+        try {
+          await api.post(`/referral/requests/${referral.id}/notes`, { note });
+          textarea.value = "";
+          toast("Note added.", "success");
+          await loadNotes();
+        } catch (err) {
+          toast(err.message || "Failed to add note.", "error");
+        } finally {
+          addBtn.disabled = false;
+        }
+      });
+      panelHost.appendChild(
+        el("div", { class: "field", style: "margin-bottom:14px;" }, [textarea, el("div", { style: "margin-top:6px;" }, [addBtn])])
+      );
+    }
+
+    await loadNotes();
+  }
+
+  // The reported gap: a referral denied at eligibility had no review path
+  // at all for a coordinator — this is that path. Reuses the same
+  // POST /notes and document-upload endpoints the Notes/Documents tabs use
+  // (so a comment or upload made here shows up there too), plus the new
+  // override endpoint, which resumes the SAME recommend_specialist step a
+  // normally-eligible referral reaches — not a separate mechanism.
+  async function renderEligibilityReview(container, stateData) {
+    const canOverride = hasPermission("referral:override");
+    const eligibility = stateData.eligibility || {};
+
+    const fileInput = el("input", { type: "file" });
+    const commentInput = el("textarea", {
+      rows: "2",
+      placeholder: canOverride
+        ? "Explain why you're overriding this denial (recommended) — recorded as a note on this referral…"
+        : "Add a note for the reviewing coordinator…",
+    });
+    const uploadBtn = el("button", { class: "btn-secondary btn-sm" }, "Attach Document");
+    const commentBtn = el("button", { class: "btn-secondary btn-sm" }, "Add Comment Only");
+    const overrideBtn = el("button", { class: "btn-primary btn-sm" }, "Override & Proceed →");
+    const statusMsg = el("div", { class: "muted", style: "font-size:11.5px;margin-top:6px;" });
+
+    uploadBtn.addEventListener("click", async () => {
+      if (!fileInput.files[0]) {
+        toast("Choose a file first.", "error");
+        return;
+      }
+      const formData = new FormData();
+      formData.append("file", fileInput.files[0]);
+      uploadBtn.disabled = true;
+      try {
+        await api.upload(`/referral/requests/${referral.id}/documents`, formData);
+        fileInput.value = "";
+        toast("Document attached to this referral and the patient's record.", "success");
+        statusMsg.textContent = "Document attached — it won't retrigger the workflow on its own; use Override & Proceed when you're ready.";
+      } catch (err) {
+        toast(err.message || "Upload failed.", "error");
+      } finally {
+        uploadBtn.disabled = false;
+      }
+    });
+
+    commentBtn.addEventListener("click", async () => {
+      const note = commentInput.value.trim();
+      if (!note) {
+        toast("Write a comment first.", "error");
+        return;
+      }
+      commentBtn.disabled = true;
+      try {
+        await api.post(`/referral/requests/${referral.id}/notes`, { note });
+        commentInput.value = "";
+        toast("Comment added — see the Notes tab.", "success");
+      } catch (err) {
+        toast(err.message || "Failed to add comment.", "error");
+      } finally {
+        commentBtn.disabled = false;
+      }
+    });
+
+    if (canOverride) {
+      overrideBtn.addEventListener("click", async () => {
+        if (!confirm("Override this eligibility denial and proceed to specialist recommendation?")) return;
+        overrideBtn.disabled = true;
+        try {
+          await api.post(`/referral-workflow/${referral.id}/override-eligibility`, {
+            comment: commentInput.value.trim() || null,
+          });
+          toast("Denial overridden — specialist candidates are being prepared.", "success");
+          commentInput.value = "";
+          await loadReferral();
+          await renderPanel();
+        } catch (err) {
+          toast(err.message || "Override failed.", "error");
+        } finally {
+          overrideBtn.disabled = false;
+        }
+      });
+    }
+
+    const actions = [uploadBtn, commentBtn];
+    if (canOverride) actions.push(overrideBtn);
+
+    container.appendChild(
+      el("div", { class: "card", style: "border-color:var(--serious);margin-bottom:14px;" }, [
+        el("div", { style: "font-weight:650;margin-bottom:4px;color:var(--serious);" }, "Eligibility check failed"),
+        el("div", { class: "muted", style: "font-size:12.5px;margin-bottom:10px;" },
+          `Network status: ${eligibility.network_status || "unknown"}${eligibility.copay_estimate_usd != null ? ` · Est. copay: $${eligibility.copay_estimate_usd}` : ""}`),
+        el("p", { class: "muted", style: "font-size:12.5px;" },
+          canOverride
+            ? "Review the denial below. You can add a comment and/or attach supporting documentation (e.g. corrected coverage proof) before overriding — both are saved to this referral and the patient's record either way."
+            : "This referral was denied at the insurance eligibility check. A care coordinator can review and override it; you can add a comment or supporting document below in the meantime."),
+        el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0;" }, [fileInput]),
+        commentInput,
+        el("div", { class: "row-actions", style: "margin-top:8px;justify-content:flex-start;" }, actions),
+        statusMsg,
+      ])
+    );
   }
 
   async function renderWorkflowTab() {
@@ -576,6 +700,9 @@ export async function renderDetail(container, { id }) {
 
       if (Array.isArray(stateData.missing_documents) && stateData.missing_documents.length) {
         body.appendChild(el("div", { class: "banner banner-warning" }, `Waiting on: ${stateData.missing_documents.join(", ")} (or a filled-in Reason)`));
+      }
+      if (referral.status === "eligibility_denied") {
+        await renderEligibilityReview(body, stateData);
       }
       if (Array.isArray(stateData.diagnosis_codes) && stateData.diagnosis_codes.length) {
         body.appendChild(

@@ -15,6 +15,11 @@ const SAMPLE_DOCTORS = [
   { first_name: "Samuel", last_name: "Whitfield", specialization: "Family Medicine", department: "Primary Care" },
 ];
 
+// Kept in lockstep with patients.js's own SAMPLE_LOCATIONS cities so sample
+// doctors and patients actually land in the same cities for the
+// same-city-priority doctor recommendation to have something to match on.
+const SAMPLE_CITIES = ["Springfield", "Riverside", "Fairview", "Lakeside"];
+
 function randomPhone() {
   const n = () => Math.floor(Math.random() * 900 + 100);
   return `+1${n()}${n()}${String(Math.floor(Math.random() * 9000) + 1000)}`;
@@ -33,6 +38,7 @@ function sampleDoctorData() {
     certifications: `Board Certified — ${pick.specialization}`,
     languages_spoken: "English",
     ratings: Math.floor(Math.random() * 2) + 4,
+    city: SAMPLE_CITIES[Math.floor(Math.random() * SAMPLE_CITIES.length)],
   };
 }
 
@@ -44,6 +50,7 @@ const editFields = [
   { name: "specialization", label: "Specialization", type: "text" },
   { name: "years_of_experience", label: "Years of Experience", type: "number" },
   { name: "department", label: "Department", type: "text" },
+  { name: "city", label: "City", type: "text", hint: "Used to prioritize this doctor for patients in the same city." },
   { name: "bio", label: "Bio", type: "textarea" },
   { name: "certifications", label: "Certifications", type: "textarea" },
   { name: "languages_spoken", label: "Languages Spoken", type: "text" },
@@ -65,6 +72,7 @@ export default createResourceModule({
     { key: "name", label: "Name", format: (r) => `${r.first_name} ${r.last_name}` },
     { key: "specialization", label: "Specialization" },
     { key: "department", label: "Department" },
+    { key: "city", label: "City" },
     { key: "phone", label: "Phone" },
     { key: "years_of_experience", label: "Experience (yrs)" },
   ],
@@ -77,6 +85,7 @@ export default createResourceModule({
     { name: "license_number", label: "License Number", type: "text", required: true },
     { name: "years_of_experience", label: "Years of Experience", type: "number" },
     { name: "department", label: "Department", type: "text" },
+    { name: "city", label: "City", type: "text", hint: "Used to prioritize this doctor for patients in the same city." },
     { name: "bio", label: "Bio", type: "textarea" },
     { name: "certifications", label: "Certifications", type: "textarea" },
     { name: "languages_spoken", label: "Languages Spoken", type: "text" },

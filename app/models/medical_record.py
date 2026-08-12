@@ -11,7 +11,11 @@ class MedicalRecord(Base, SoftDeleteMixin):
 
     id = Column(Integer, primary_key=True, index=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
-    doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=False)
+    # Nullable: a patient's own direct document upload (no referral, no
+    # treating doctor involved yet) has no doctor to attribute the record
+    # to — see app.services.storage.save_medical_record_document and the
+    # POST /medical-records/quick-upload route.
+    doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=True)
     visit_date = Column(DateTime(timezone=True), nullable=False)
     diagnosis = Column(String(500))
     symptoms = Column(Text)
@@ -36,3 +40,18 @@ class MedicalRecord(Base, SoftDeleteMixin):
 
     patient = relationship("Patient", back_populates="medical_records")
     doctor = relationship("Doctor", back_populates="medical_records")
+
+
+class MedicalRecordDocument(Base):
+    """A file attached directly to a patient's medical record — the
+    general-purpose counterpart to ReferralDocument, which only attaches to
+    a referral. Populated via POST /medical-records/{id}/documents or the
+    one-call POST /medical-records/quick-upload."""
+
+    __tablename__ = "medical_record_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    medical_record_id = Column(Integer, ForeignKey("medical_records.id"), nullable=False)
+    filename = Column(String(255), nullable=False)
+    storage_path = Column(String(500), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

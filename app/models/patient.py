@@ -26,6 +26,11 @@ class Patient(Base, SoftDeleteMixin):
     date_of_birth = Column(Date, nullable=False)
     gender = Column(Enum(GenderEnum), nullable=False)
     address = Column(Text)
+    # Simple city/region text match for doctor-proximity ranking — see
+    # app.services.doctor_recommendation.recommend_platform_doctors. Not
+    # geocoded; deliberately just a free-text label to compare against
+    # Doctor.city.
+    city = Column(String(100), nullable=True)
     emergency_contact_name = Column(String(200))
     emergency_contact_phone = Column(String(20))
     insurance_provider = Column(String(200))

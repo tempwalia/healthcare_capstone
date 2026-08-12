@@ -7,6 +7,7 @@ function htmlInputType(type) {
   if (type === "number") return "number";
   if (type === "date") return "date";
   if (type === "datetime") return "datetime-local";
+  if (type === "file") return "file";
   return "text";
 }
 
@@ -151,6 +152,7 @@ export function openModal({ title, fields, initial = {}, submitLabel = "Save", o
       if (field.type === "checkbox") value = input.checked;
       else if (field.type === "number") value = input.value === "" ? null : Number(input.value);
       else if (field.type === "datetime") value = fromDatetimeLocalValue(input.value);
+      else if (field.type === "file") value = input.files[0] || null;
       else if (field.type === "select" || field.type === "select-async") {
         value = input.value === "" ? null : field.numeric === false ? input.value : Number(input.value);
       } else value = input.value === "" ? null : input.value;

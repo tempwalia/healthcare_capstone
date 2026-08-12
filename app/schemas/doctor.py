@@ -18,6 +18,9 @@ class DoctorBase(BaseModel):
     ratings: Optional[int] = None
     profile_picture_url: Optional[str] = None
     department: Optional[str] = None
+    # Simple city/region text match for proximity ranking — see
+    # app.services.doctor_recommendation.recommend_platform_doctors.
+    city: Optional[str] = None
 
 
 class DoctorCreate(DoctorBase):
@@ -37,6 +40,9 @@ class DoctorUpdate(BaseModel):
     ratings: Optional[int] = None
     profile_picture_url: Optional[str] = None
     department: Optional[str] = None
+    # Simple city/region text match for proximity ranking — see
+    # app.services.doctor_recommendation.recommend_platform_doctors.
+    city: Optional[str] = None
 
 
 class DoctorResponse(DoctorBase):

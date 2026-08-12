@@ -9,6 +9,7 @@ import doctorsModule from "./modules/doctors.js";
 import * as appointmentDetailModule from "./modules/appointment_detail.js";
 import medicalRecordsModule from "./modules/medical_records.js";
 import * as referralsModule from "./modules/referrals.js";
+import * as newRequestModule from "./modules/new_request.js";
 import * as homeModule from "./modules/home.js";
 import * as opsQueueModule from "./modules/ops_queue.js";
 import * as myDayModule from "./modules/my_day.js";
@@ -197,6 +198,7 @@ router.add("/medical-records", guarded("Medical Records", medicalRecordsModule.r
 router.add("/home", guarded("Home", homeModule.render));
 router.add("/referrals", guarded("Referrals", referralsModule.renderList));
 router.add("/referrals/:id", guarded("Referral Detail", referralsModule.renderDetail));
+router.add("/requests/new", guarded("New Request", newRequestModule.render));
 router.add("/ops-queue", guarded("Ops Queue", opsQueueModule.render));
 router.add("/my-day", guarded("My Day", myDayModule.render));
 router.add("/schedule", guarded("Scheduling & Appointments", scheduleModule.render));

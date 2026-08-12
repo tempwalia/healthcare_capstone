@@ -2,7 +2,7 @@ from app.models.appointment import Appointment
 from app.models.audit import AuditLog
 from app.models.doctor import Doctor
 from app.models.insurance import DoctorInsuranceNetwork, InsurancePlan
-from app.models.medical_record import MedicalRecord
+from app.models.medical_record import MedicalRecord, MedicalRecordDocument
 from app.models.notification import Notification
 from app.models.outbox import OutboxEvent
 from app.models.patient import Patient
@@ -19,6 +19,7 @@ __all__ = [
     "Doctor",
     "Appointment",
     "MedicalRecord",
+    "MedicalRecordDocument",
     "DoctorAvailability",
     "ScheduleSlot",
     "Role",

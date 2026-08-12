@@ -86,6 +86,11 @@ export function createResourceModule(config) {
       newBtn.addEventListener("click", openCreateModal);
       toolbar.appendChild(newBtn);
     }
+    // Lets a resource add a bespoke toolbar action (e.g. medical_records.js's
+    // "Upload Document" button) without becoming a fully hand-written module.
+    if (config.extraToolbarButtons) {
+      for (const btn of config.extraToolbarButtons({ reload: load })) toolbar.appendChild(btn);
+    }
 
     function buildActions(row) {
       const buttons = [];

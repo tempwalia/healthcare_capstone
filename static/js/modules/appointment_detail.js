@@ -1,6 +1,8 @@
-import { api } from "../api.js";
+import { api, downloadFile } from "../api.js";
 import { hasPermission } from "../state.js";
 import { navigate } from "../router.js";
+import { renderTable } from "../components/table.js";
+import { toast } from "../components/toast.js";
 import { el, formatDateTime, capitalize, appointmentStatusBadgeClass } from "../utils.js";
 import { renderConsultationSection } from "../components/consultation.js";
 import { selfServiceActions } from "./appointments.js";
@@ -31,6 +33,18 @@ function infoBlock(label, value) {
   ]);
 }
 
+function downloadButton(path, filename) {
+  const btn = el("button", { class: "btn-ghost btn-sm" }, "Download");
+  btn.addEventListener("click", async () => {
+    try {
+      await downloadFile(path, filename);
+    } catch (err) {
+      toast(err.message || "Download failed.", "error");
+    }
+  });
+  return btn;
+}
+
 export async function render(container, { id }) {
   const appointmentId = Number(id);
   container.innerHTML = "";
@@ -42,6 +56,7 @@ export async function render(container, { id }) {
   const headerHost = el("div", {});
   const doctorHost = el("div", {});
   const patientHost = el("div", {});
+  const attachedRecordHost = el("div", {});
   const consultHost = el("div", {});
 
   container.appendChild(el("div", { class: "card" }, [headerHost]));
@@ -51,6 +66,11 @@ export async function render(container, { id }) {
       el("div", { class: "card" }, [el("div", { class: "card-header" }, [el("h2", {}, "Patient")]), patientHost]),
     ])
   );
+  const attachedRecordCard = el("div", { class: "card hidden" }, [
+    el("div", { class: "card-header" }, [el("h2", {}, "Attached Medical Record")]),
+    attachedRecordHost,
+  ]);
+  container.appendChild(attachedRecordCard);
   container.appendChild(
     el("div", { class: "card" }, [
       el("div", { class: "card-header" }, [
@@ -147,7 +167,42 @@ export async function render(container, { id }) {
     });
   }
 
+  // The medical record the requester picked or uploaded when booking this
+  // appointment (via the unified New Request flow) — visible to whoever can
+  // already see this appointment (patient, assigned doctor, staff), even if
+  // they aren't that record's own doctor_id. Card stays hidden when nothing
+  // was attached — most direct bookings won't have one.
+  async function loadAttachedRecord() {
+    let attached;
+    try {
+      attached = await api.get(`/appointments/${appointment.id}/attached-record`);
+    } catch {
+      attachedRecordCard.classList.add("hidden");
+      return;
+    }
+    attachedRecordCard.classList.remove("hidden");
+    attachedRecordHost.innerHTML = "";
+    attachedRecordHost.appendChild(
+      el("div", { class: "grid-3", style: "margin-bottom:10px;" }, [
+        infoBlock("Type", attached.record.record_type || "—"),
+        infoBlock("Diagnosis / Symptoms", attached.record.diagnosis || attached.record.symptoms || "—"),
+        infoBlock("Visit Date", formatDateTime(attached.record.visit_date)),
+      ])
+    );
+    const docsHost = el("div", {});
+    attachedRecordHost.appendChild(docsHost);
+    renderTable(docsHost, {
+      columns: [
+        { key: "filename", label: "Filename" },
+        { key: "created_at", label: "Uploaded", format: (d) => formatDateTime(d.created_at) },
+      ],
+      rows: attached.documents,
+      actions: (d) => [downloadButton(`/medical-records/documents/${d.id}/download`, d.filename)],
+      emptyMessage: "No documents on this record.",
+    });
+  }
+
   if (await loadHeader()) {
-    await Promise.all([loadDoctor(), loadPatient(), loadConsultation()]);
+    await Promise.all([loadDoctor(), loadPatient(), loadAttachedRecord(), loadConsultation()]);
   }
 }

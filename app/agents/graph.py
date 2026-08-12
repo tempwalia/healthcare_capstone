@@ -6,7 +6,7 @@ from langgraph.types import interrupt
 from app.agents.nodes.eligibility import eligibility_node, escalate_eligibility_node
 from app.agents.nodes.intake import intake_node
 from app.agents.nodes.notify import notify_node
-from app.agents.nodes.scheduling import scheduling_node
+from app.agents.nodes.scheduling import book_real_appointment_node, scheduling_node
 from app.agents.nodes.specialist import specialist_node
 from app.agents.nodes.summarizer import summarizer_node
 from app.agents.state import ReferralState
@@ -17,7 +17,17 @@ def route_after_intake(state: ReferralState) -> str:
 
 
 def route_after_eligibility(state: ReferralState) -> str:
-    return "escalate_eligibility" if not state["eligibility"]["verified"] else "recommend_specialist"
+    if not state["eligibility"]["verified"]:
+        return "escalate_eligibility"
+    return "book_real_appointment" if state.get("specialist_preselected") else "recommend_specialist"
+
+
+def route_after_escalation(state: ReferralState) -> str:
+    """Same "already have a real, chosen doctor" branch as
+    route_after_eligibility — an overridden-eligibility referral with a
+    pre-selected specialist also skips straight to booking, not the
+    external-mock-directory recommendation step."""
+    return "book_real_appointment" if state.get("specialist_preselected") else "recommend_specialist"
 
 
 async def await_documents_node(state: ReferralState) -> dict:
@@ -41,6 +51,7 @@ def build_graph(checkpointer) -> Any:
     g.add_node("recommend_specialist", specialist_node)
     g.add_node("await_specialist_approval", await_specialist_approval)
     g.add_node("schedule_appointment", scheduling_node)
+    g.add_node("book_real_appointment", book_real_appointment_node)
     g.add_node("summarize_for_specialist", summarizer_node)
     g.add_node("notify", notify_node)
 
@@ -52,12 +63,25 @@ def build_graph(checkpointer) -> Any:
     g.add_edge("await_documents", END)  # resumes via a fresh submit once docs arrive
     g.add_conditional_edges(
         "verify_eligibility", route_after_eligibility,
-        {"escalate_eligibility": "escalate_eligibility", "recommend_specialist": "recommend_specialist"},
+        {
+            "escalate_eligibility": "escalate_eligibility",
+            "recommend_specialist": "recommend_specialist",
+            "book_real_appointment": "book_real_appointment",
+        },
     )
-    g.add_edge("escalate_eligibility", END)  # resumes via coordinator override endpoint
+    # Pauses (interrupt()) rather than dead-ending — resumes via
+    # POST /referral-workflow/{id}/override-eligibility into either the same
+    # recommend_specialist step a normally-eligible referral reaches, or
+    # straight to book_real_appointment if a real specialist was already
+    # chosen (same branch route_after_eligibility takes above).
+    g.add_conditional_edges(
+        "escalate_eligibility", route_after_escalation,
+        {"recommend_specialist": "recommend_specialist", "book_real_appointment": "book_real_appointment"},
+    )
     g.add_edge("recommend_specialist", "await_specialist_approval")
     g.add_edge("await_specialist_approval", "schedule_appointment")
     g.add_edge("schedule_appointment", "summarize_for_specialist")
+    g.add_edge("book_real_appointment", "summarize_for_specialist")
     g.add_edge("summarize_for_specialist", "notify")
     g.add_edge("notify", END)
 

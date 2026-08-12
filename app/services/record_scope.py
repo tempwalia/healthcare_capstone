@@ -111,3 +111,17 @@ async def medical_record_visibility_filter(db: AsyncSession, current_user: User)
     if not conditions:
         return false()
     return or_(*conditions)
+
+
+async def validate_medical_record_for_patient(
+    db: AsyncSession, medical_record_id: int, patient_id: int
+) -> MedicalRecord:
+    """Shared guard for attaching an existing medical record when creating a
+    referral or booking an appointment — the record must actually belong to
+    the patient the request is for, not just exist somewhere."""
+    record = await db.get(MedicalRecord, medical_record_id)
+    if record is None or record.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Medical record not found")
+    if record.patient_id != patient_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Medical record does not belong to this patient")
+    return record

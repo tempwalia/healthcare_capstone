@@ -95,7 +95,8 @@ async def gather_patient_context(db: AsyncSession, current_user: User, patient_i
     for appointment in appointments:
         care_team.setdefault(appointment.doctor_id, "treating")
     for record in medical_records:
-        care_team.setdefault(record.doctor_id, "treating")
+        if record.doctor_id is not None:
+            care_team.setdefault(record.doctor_id, "treating")
 
     return {
         "patient_id": patient.id,

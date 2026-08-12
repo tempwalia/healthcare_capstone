@@ -12,6 +12,12 @@ class ReferralRequestBase(BaseModel):
     reason: Optional[str] = None
     preferred_location: Optional[str] = None
     target_wait_days: Optional[int] = 14
+    # An existing medical record the requester attached at creation time —
+    # see app.services.record_scope.validate_medical_record_for_patient.
+    medical_record_id: Optional[int] = None
+    # A specific ScheduleSlot the requester picked for specialist_id — only
+    # meaningful alongside a real, pre-chosen specialist_id.
+    preferred_slot_id: Optional[int] = None
 
 
 class ReferralRequestCreate(ReferralRequestBase):
@@ -61,6 +67,16 @@ class ResumeDecision(BaseModel):
     # real platform Doctor row (creates/overwrites a ProviderDirectoryLink).
     # Omitted entirely, resume behaves exactly as before this existed.
     platform_doctor_id: Optional[int] = None
+
+
+class OverrideEligibilityDecision(BaseModel):
+    """Body for `POST /referral-workflow/{id}/override-eligibility` — a care
+    coordinator's decision to proceed past a failed eligibility check.
+    `comment` is optional but strongly expected in practice; when present
+    it's recorded as a SpecialistNote so the reason for the override is
+    visible on the referral, not just in the audit log."""
+
+    comment: Optional[str] = None
 
 
 class ProviderDirectoryLinkResponse(BaseModel):

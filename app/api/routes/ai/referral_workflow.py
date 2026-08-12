@@ -11,8 +11,14 @@ from app.api.dependencies.database import get_async_session
 from app.api.routes.referral import _get_scoped_referral
 from app.models.doctor import Doctor
 from app.models.provider_directory_link import ProviderDirectoryLink
+from app.models.referral import ReferralWorkflowStatus, SpecialistNote
 from app.models.user import User
-from app.schemas.referral import ProviderDirectoryLinkResponse, ResumeDecision
+from app.schemas.referral import (
+    OverrideEligibilityDecision,
+    ProviderDirectoryLinkResponse,
+    ResumeDecision,
+)
+from app.services.audit import log_action
 
 router = APIRouter(prefix="/referral-workflow", tags=["referral-workflow"])
 
@@ -42,6 +48,17 @@ async def resume_workflow(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(require_permission("referral:approve")),
 ):
+    # Eligibility denial now also pauses the graph (see
+    # escalate_eligibility_node) with its own resume endpoint below — guard
+    # by referral status, not just "some interrupt exists", so this endpoint
+    # only ever resumes the specialist-approval pause it was built for.
+    referral = await _get_scoped_referral(db, current_user, referral_id)
+    if referral.status != ReferralWorkflowStatus.AWAITING_SPECIALIST_APPROVAL.value:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This referral isn't waiting on specialist approval",
+        )
+
     graph = agent_graph.get_compiled_graph()
     config = {"configurable": {"thread_id": f"referral-{referral_id}"}}
 
@@ -58,7 +75,6 @@ async def resume_workflow(
     # just a `doctors.id == decision.doctor_id` coincidence check. Omitting
     # platform_doctor_id (the default) leaves this whole block a no-op and
     # the referral behaves exactly as it did before this feature existed.
-    referral = await _get_scoped_referral(db, current_user, referral_id)
     link = (
         await db.execute(
             select(ProviderDirectoryLink).where(
@@ -89,6 +105,54 @@ async def resume_workflow(
     result = await graph.ainvoke(
         Command(resume=decision.model_dump(exclude={"platform_doctor_id"})), config=config
     )
+    return {"status": result.get("status")}
+
+
+@router.post("/{referral_id}/override-eligibility")
+async def override_eligibility(
+    referral_id: int,
+    decision: OverrideEligibilityDecision,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(require_permission("referral:override")),
+):
+    """The care-coordinator review action for a referral denied at the
+    eligibility-check step — resumes the paused workflow
+    (escalate_eligibility_node's interrupt()) straight into
+    recommend_specialist, the exact same modular step every other referral
+    reaches, rather than a separate override-only path. Gated on
+    referral:override specifically (not referral:approve, which /resume
+    above uses): bypassing a failed eligibility check is a materially
+    bigger call than approving a candidate the workflow itself already
+    surfaced, and only care_coordinator/admin hold it today."""
+    referral = await _get_scoped_referral(db, current_user, referral_id)
+    if referral.status != ReferralWorkflowStatus.ELIGIBILITY_DENIED.value:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This referral isn't currently denied at eligibility — nothing to override",
+        )
+
+    graph = agent_graph.get_compiled_graph()
+    config = {"configurable": {"thread_id": f"referral-{referral_id}"}}
+    snapshot = await graph.aget_state(config)
+    if not snapshot.interrupts:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This referral has no pending eligibility review to resume",
+        )
+
+    if decision.comment:
+        db.add(SpecialistNote(
+            referral_request_id=referral.id,
+            note=f"[Eligibility override by {current_user.username}] {decision.comment}",
+        ))
+    await log_action(
+        db, actor_id=current_user.id, action="referral.eligibility.overridden",
+        resource_type="referral_request", resource_id=referral.id,
+        details={"comment": decision.comment},
+    )
+    await db.commit()
+
+    result = await graph.ainvoke(Command(resume={"comment": decision.comment}), config=config)
     return {"status": result.get("status")}
 
 

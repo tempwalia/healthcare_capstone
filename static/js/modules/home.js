@@ -72,7 +72,7 @@ export async function render(container) {
     el("div", { class: "card" }, [
       el("div", { class: "card-header" }, [el("h2", {}, "Quick Actions")]),
       el("div", { class: "grid-auto" }, [
-        ctaButton("Request a Referral", "/referrals", "📝"),
+        ctaButton("New Request", "/requests/new", "📝"),
         ctaButton("My Appointments", "/appointments", "📅"),
         ctaButton("My Medical Records", "/medical-records", "🗂️"),
         ctaButton("Ask the Assistant", "/assistant", "💬"),
@@ -138,7 +138,7 @@ export async function render(container) {
   function renderReferrals(referrals) {
     referralsHost.innerHTML = "";
     if (!referrals.length) {
-      const link = el("a", { href: "#/referrals" }, "Request your first referral →");
+      const link = el("a", { href: "#/requests/new" }, "Request your first referral →");
       referralsHost.appendChild(el("div", { class: "empty-state" }, ["No referrals yet. ", link]));
       return;
     }

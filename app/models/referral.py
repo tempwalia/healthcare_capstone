@@ -34,6 +34,21 @@ class ReferralRequest(Base, SoftDeleteMixin):
     target_wait_days = Column(Integer, default=14)
     preferred_location = Column(String(200), nullable=True)
     workflow_thread_id = Column(String(64), nullable=True)
+    # The existing medical record (if any) the requester attached at
+    # creation time via the unified "New Request" flow.
+    medical_record_id = Column(Integer, ForeignKey("medical_records.id"), nullable=True)
+    # The specific slot the requester picked for the pre-selected specialist
+    # (if any) — see book_real_appointment_node, which prefers this over
+    # just grabbing the soonest open slot. Only meaningful alongside
+    # specialist_id; a referral with no pre-chosen doctor has no slot to pick.
+    # use_alter=True: this closes a 3-table FK cycle (referral_requests ->
+    # schedule_slots -> appointments -> referral_requests via referral_id) —
+    # without it, neither SQLAlchemy's drop_all nor a plain CREATE TABLE
+    # ordering can resolve which table to emit first.
+    preferred_slot_id = Column(
+        Integer, ForeignKey("schedule_slots.id", use_alter=True, name="fk_referral_requests_preferred_slot_id_schedule_slots"),
+        nullable=True,
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

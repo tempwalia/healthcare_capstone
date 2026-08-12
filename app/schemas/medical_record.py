@@ -1,12 +1,14 @@
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
 
 class MedicalRecordBase(BaseModel):
     patient_id: int
-    doctor_id: int
+    # Optional: a patient's own direct document upload has no treating
+    # doctor to name — see POST /medical-records/quick-upload.
+    doctor_id: Optional[int] = None
     visit_date: datetime
     diagnosis: Optional[str] = None
     symptoms: Optional[str] = None
@@ -53,3 +55,22 @@ class MedicalRecordResponse(MedicalRecordBase):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class MedicalRecordDocumentResponse(BaseModel):
+    id: int
+    medical_record_id: int
+    filename: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AttachedMedicalRecordResponse(BaseModel):
+    """The medical record (and its documents) a referral/appointment has
+    attached — returned by GET .../attached-record so a doctor scoped to
+    see that referral/appointment can inspect it, even if they aren't the
+    record's own `doctor_id`. See app.services.document_access."""
+
+    record: MedicalRecordResponse
+    documents: List[MedicalRecordDocumentResponse]
