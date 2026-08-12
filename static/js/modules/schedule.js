@@ -3,7 +3,9 @@ import { hasPermission } from "../state.js";
 import { renderTable, renderPager } from "../components/table.js";
 import { openModal } from "../components/modal.js";
 import { toast } from "../components/toast.js";
-import { el, formatDateTime, capitalize } from "../utils.js";
+import { navigate } from "../router.js";
+import { el, formatDateTime, capitalize, skeletonBlock, appointmentStatusBadgeClass } from "../utils.js";
+import appointmentsModule, { selfServiceActions } from "./appointments.js";
 
 const WEEKDAYS = [
   { value: 0, label: "Monday" }, { value: 1, label: "Tuesday" }, { value: 2, label: "Wednesday" },
@@ -73,6 +75,66 @@ async function fillPatientOptions(select) {
 export async function render(container) {
   container.innerHTML = "";
   const local = { skip: 0, limit: 20, total: 0, items: [], doctorFilter: "", bookedFilter: "" };
+
+  // ---- My Upcoming Appointments (self-service patients only) ----
+  // Same "modify or cancel from the Scheduling page too, not just
+  // Appointments/Home" ask this whole flow already supports elsewhere —
+  // reuses appointments.js's exact reschedule/cancel controls rather than
+  // re-implementing them a third time.
+  const isSelfServicePatient = hasPermission("appointment:view_own") && !hasPermission("appointment:manage");
+  if (isSelfServicePatient) {
+    const myApptsHost = el("div", {});
+    container.appendChild(
+      el("div", { class: "card" }, [
+        el("div", { class: "card-header" }, [el("h2", {}, "My Upcoming Appointments")]),
+        myApptsHost,
+      ])
+    );
+
+    async function loadMyAppointments() {
+      myApptsHost.innerHTML = "";
+      myApptsHost.appendChild(skeletonBlock(2));
+      try {
+        const page = await api.get("/appointments/?upcoming_only=true&limit=10");
+        renderMyAppointments(page.items || []);
+      } catch (err) {
+        myApptsHost.innerHTML = "";
+        myApptsHost.appendChild(el("div", { class: "banner banner-error" }, err.message || "Failed to load your appointments."));
+      }
+    }
+
+    function renderMyAppointments(items) {
+      myApptsHost.innerHTML = "";
+      if (!items.length) {
+        myApptsHost.appendChild(el("div", { class: "empty-state" }, "No upcoming appointments — book one below."));
+        return;
+      }
+      for (const appt of items) {
+        const actionsHost = el("div", { style: "display:flex;gap:6px;align-items:center;" }, [
+          el("span", { class: appointmentStatusBadgeClass(appt.status) }, capitalize(appt.status)),
+          ...selfServiceActions(appt, loadMyAppointments),
+        ]);
+        // Buttons inside actionsHost shouldn't also trigger the card's own
+        // click-through to the detail page — same stopPropagation
+        // convention table.js uses for its row-actions cell.
+        actionsHost.addEventListener("click", (e) => e.stopPropagation());
+
+        const card = el("div", { class: "card card-interactive", style: "margin-bottom:8px;cursor:pointer;" }, [
+          el("div", { style: "display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;" }, [
+            el("div", {}, [
+              el("span", { style: "font-weight:600;" }, formatDateTime(appt.appointment_datetime)),
+              el("span", { class: "muted", style: "margin-left:8px;font-size:12.5px;" }, appt.reason || "—"),
+            ]),
+            actionsHost,
+          ]),
+        ]);
+        card.addEventListener("click", () => navigate(`/appointments/${appt.id}`));
+        myApptsHost.appendChild(card);
+      }
+    }
+
+    await loadMyAppointments();
+  }
 
   // ---- Availability & slot generation ----
   const genDoctorSelect = el("select", { style: "max-width:280px;" });
@@ -176,33 +238,78 @@ export async function render(container) {
       return;
     }
     const suggested = inferSpecialtyFromText(symptomsInput.value);
-    const ranked = suggested
+    const specialtyRanked = suggested
       ? [...doctors].sort((a, b) => (b.specialization === suggested ? 1 : 0) - (a.specialization === suggested ? 1 : 0))
       : doctors;
-    renderDoctorResults(ranked, suggested, patientId);
+    await renderDoctorResults(specialtyRanked, suggested, patientId);
   });
 
-  function renderDoctorResults(doctors, suggested, patientId) {
+  // A "recommended" doctor with zero open slots is a dead end — the exact
+  // "Available slots — Dr. X / No open slots for this doctor yet" complaint.
+  // Checking real slot counts up front (for the shown subset only, to keep
+  // this to one bounded batch of requests) lets doctors who actually have
+  // openings surface first, and flags the ones who don't before a click
+  // wastes a round-trip finding out.
+  async function openSlotCount(doctorId) {
+    try {
+      const page = await api.get(`/schedule/slots/?doctor_id=${doctorId}&is_booked=false&upcoming_only=true&limit=1`);
+      return page.total ?? (page.items || []).length;
+    } catch {
+      return null; // unknown — don't claim "no slots" if the check itself failed
+    }
+  }
+
+  async function renderDoctorResults(doctors, suggested, patientId) {
     doctorResultsHost.innerHTML = "";
     doctorResultsHost.appendChild(
       el("div", { class: "banner banner-info" },
         suggested
-          ? `Based on the symptoms entered, "${suggested}" looks like the best-matching specialty — matching doctors are listed first.`
-          : "No specialty keywords matched that description — showing all doctors."
+          ? `Based on the symptoms entered, "${suggested}" looks like the best-matching specialty — matching doctors are listed first, and doctors with open slots are ranked ahead of those without.`
+          : "No specialty keywords matched that description — showing all doctors, with open-slot doctors ranked first."
       )
     );
     if (!doctors.length) {
       doctorResultsHost.appendChild(el("div", { class: "empty-state" }, "No doctors in the directory yet — add one on the Doctors page."));
       return;
     }
+    doctorResultsHost.appendChild(skeletonBlock(3));
+
+    const shortlist = doctors.slice(0, 12);
+    const slotCounts = await Promise.all(shortlist.map((d) => openSlotCount(d.id)));
+    const withCounts = shortlist.map((d, i) => ({ doctor: d, openSlots: slotCounts[i] }));
+    // Stable-ish: doctors with a known nonzero count first, then unknown
+    // (check failed), then confirmed zero — never hides a doctor, just
+    // deprioritizes the ones we already know have nothing to book.
+    withCounts.sort((a, b) => {
+      const rank = (c) => (c === null ? 1 : c > 0 ? 0 : 2);
+      return rank(a.openSlots) - rank(b.openSlots);
+    });
+
+    doctorResultsHost.innerHTML = "";
+    doctorResultsHost.appendChild(
+      el("div", { class: "banner banner-info" },
+        suggested
+          ? `Based on the symptoms entered, "${suggested}" looks like the best-matching specialty — matching doctors are listed first, and doctors with open slots are ranked ahead of those without.`
+          : "No specialty keywords matched that description — showing all doctors, with open-slot doctors ranked first."
+      )
+    );
     const cardsHost = el("div", { class: "grid-auto" });
-    for (const d of doctors.slice(0, 12)) {
+    for (const { doctor: d, openSlots } of withCounts) {
       const matched = suggested && d.specialization === suggested;
-      const viewSlotsBtn = el("button", { class: "btn-secondary btn-sm", style: "margin-top:8px;" }, "View Available Slots");
-      viewSlotsBtn.addEventListener("click", () => loadSlotsForDoctor(d, patientId));
+      const hasSlots = openSlots === null || openSlots > 0;
+      const viewSlotsBtn = el(
+        "button",
+        { class: "btn-secondary btn-sm", style: "margin-top:8px;", ...(openSlots === 0 ? { disabled: "disabled" } : {}) },
+        openSlots === 0 ? "No open slots" : "View Available Slots"
+      );
+      if (openSlots !== 0) viewSlotsBtn.addEventListener("click", () => loadSlotsForDoctor(d, patientId));
       cardsHost.appendChild(
-        el("div", { class: "card" }, [
-          matched ? el("span", { class: "badge badge-good", style: "margin-bottom:6px;" }, "Recommended match") : null,
+        el("div", { class: "card", style: hasSlots ? "" : "opacity:0.6;" }, [
+          el("div", { class: "chip-row", style: "margin-bottom:6px;" }, [
+            matched ? el("span", { class: "badge badge-good" }, "Recommended match") : null,
+            openSlots > 0 ? el("span", { class: "badge badge-good" }, `${openSlots} open slot${openSlots === 1 ? "" : "s"}`) : null,
+            openSlots === 0 ? el("span", { class: "badge badge-neutral" }, "No slots yet") : null,
+          ]),
           el("div", { style: "font-weight:650;" }, `${d.first_name} ${d.last_name}`),
           el("div", { class: "muted", style: "font-size:12.5px;" }, d.specialization),
           viewSlotsBtn,
@@ -216,7 +323,7 @@ export async function render(container) {
     slotsHost.innerHTML = '<div class="loading-line">Loading available slots…</div>';
     let slots;
     try {
-      slots = (await api.get(`/schedule/slots/?doctor_id=${doctor.id}&is_booked=false&limit=20`)).items || [];
+      slots = (await api.get(`/schedule/slots/?doctor_id=${doctor.id}&is_booked=false&upcoming_only=true&limit=20`)).items || [];
     } catch (err) {
       slotsHost.innerHTML = "";
       slotsHost.appendChild(el("div", { class: "banner banner-error" }, err.message || "Failed to load slots."));
@@ -408,6 +515,16 @@ export async function render(container) {
       },
     });
   }
+
+  // ---- All Appointments (merged from the old standalone Appointments page) ----
+  // Full manageable list — search, pagination, edit/delete for staff — as
+  // opposed to "My Upcoming Appointments" above, which is just the
+  // at-a-glance next-few. Reuses the exact same resource module the old
+  // /appointments route rendered (its own card/header included), not a
+  // second implementation.
+  const appointmentsHost = el("div", {});
+  container.appendChild(appointmentsHost);
+  await appointmentsModule.render(appointmentsHost);
 
   await loadSlots();
 }

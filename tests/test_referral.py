@@ -38,10 +38,13 @@ async def _link_doctor_to_user(test_session, doctor_id: int, username: str) -> N
 async def test_submit_referral_requires_referral_create_permission(
     test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
 ):
-    """care_coordinator can create the patient/doctor fixtures (needs
+    """specialist can create the patient/doctor fixtures (needs
     patient:manage/doctor:manage) but deliberately lacks referral:create —
-    submitting the referral itself must still be refused."""
-    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    submitting the referral itself must still be refused. (care_coordinator
+    used to be this test's example role too, but now genuinely holds
+    referral:create — see test_care_coordinator_can_submit_a_referral below
+    — so it no longer fits this negative case.)"""
+    await _grant_role(test_session, test_user_data["username"], "specialist")
     patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
     doctor = (await test_client.post("/doctors/", json=test_doctor_data, headers=auth_headers)).json()
 
@@ -56,6 +59,31 @@ async def test_submit_referral_requires_referral_create_permission(
         headers=auth_headers,
     )
     assert response.status_code == 403
+
+
+async def test_care_coordinator_can_submit_a_referral(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
+):
+    """care_coordinator gained referral:create so a coordinator can start a
+    referral through the exact same POST /referral/requests/ path a patient
+    or PCP uses — the "same existing logic" the self-service/staff form
+    split in static/js/modules/referrals.js already branches on, not a
+    separate coordinator-only creation path."""
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
+    doctor = (await test_client.post("/doctors/", json=test_doctor_data, headers=auth_headers)).json()
+
+    response = await test_client.post(
+        "/referral/requests/",
+        json={
+            "patient_id": patient["id"],
+            "referring_doctor_id": doctor["id"],
+            "request_date": "2026-08-06",
+            "reason": "Persistent lower back pain",
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 202
 
 
 async def test_submit_referral_with_reason_proceeds_past_intake_without_documents(
@@ -207,6 +235,43 @@ async def test_care_coordinator_sees_all_referrals(
     await _grant_role(test_session, test_user_data["username"], "care_coordinator")
     listed = (await test_client.get("/referral/requests/", headers=auth_headers)).json()
     assert listed["total"] >= 1
+
+
+async def test_list_referrals_q_searches_reason_location_and_id(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
+):
+    """GET /referral/requests/?q= — matches reason/preferred_location text
+    or an exact id, still within the caller's own referral_visibility_filter
+    scope (care_coordinator here resolves to unrestricted, same as
+    list_referrals without q — the scoping itself is covered elsewhere)."""
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
+    doctor = (await test_client.post("/doctors/", json=test_doctor_data, headers=auth_headers)).json()
+
+    knee = (await test_client.post(
+        "/referral/requests/",
+        json={"patient_id": patient["id"], "referring_doctor_id": doctor["id"], "request_date": "2026-08-06",
+              "reason": "Persistent knee pain after running"},
+        headers=auth_headers,
+    )).json()
+    heart = (await test_client.post(
+        "/referral/requests/",
+        json={"patient_id": patient["id"], "referring_doctor_id": doctor["id"], "request_date": "2026-08-06",
+              "reason": "Chest tightness and palpitations", "preferred_location": "Downtown Clinic"},
+        headers=auth_headers,
+    )).json()
+
+    by_reason = (await test_client.get("/referral/requests/?q=knee", headers=auth_headers)).json()
+    assert {r["id"] for r in by_reason["items"]} == {knee["id"]}
+
+    by_location = (await test_client.get("/referral/requests/?q=Downtown", headers=auth_headers)).json()
+    assert {r["id"] for r in by_location["items"]} == {heart["id"]}
+
+    by_id = (await test_client.get(f"/referral/requests/?q={knee['id']}", headers=auth_headers)).json()
+    assert {r["id"] for r in by_id["items"]} == {knee["id"]}
+
+    no_match = (await test_client.get("/referral/requests/?q=nonexistent-xyz", headers=auth_headers)).json()
+    assert no_match["items"] == []
 
 
 async def test_upload_and_list_referral_document(

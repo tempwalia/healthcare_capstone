@@ -31,7 +31,25 @@ export function createResourceModule(config) {
     ]);
     container.appendChild(card);
 
-    if (config.searchableFields?.length) {
+    // serverSearchParam (e.g. "q") round-trips the search term to the
+    // backend via `local.filters` — the same mechanism serverFilters below
+    // already uses — so search actually scans every matching record the
+    // caller's role can see, not just whatever page happened to be loaded.
+    // searchableFields (no serverSearchParam) is the older, narrower
+    // current-page-only client-side filter, kept for resources that don't
+    // have a backend `q` param yet.
+    if (config.serverSearchParam) {
+      const searchInput = el("input", { type: "search", placeholder: `Search ${config.title.toLowerCase()}…` });
+      searchInput.addEventListener(
+        "input",
+        debounce(() => {
+          local.filters[config.serverSearchParam] = searchInput.value.trim();
+          local.skip = 0;
+          load();
+        }, 300)
+      );
+      toolbar.appendChild(el("div", { class: "search-box" }, [searchInput]));
+    } else if (config.searchableFields?.length) {
       const searchInput = el("input", { type: "search", placeholder: "Search current page…" });
       searchInput.addEventListener(
         "input",
@@ -60,7 +78,7 @@ export function createResourceModule(config) {
     }
 
     toolbar.appendChild(el("div", { class: "spacer" }));
-    if (config.searchableFields?.length) {
+    if (config.searchableFields?.length && !config.serverSearchParam) {
       toolbar.appendChild(el("span", { class: "toolbar-hint" }, "Search scans the current page only"));
     }
     if (hasPermission(config.permissions?.create)) {

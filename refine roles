@@ -1,0 +1,144 @@
+Direct answer Below are role-focused UI views and the concrete interactions between Patient, Doctor, and Care Coordinator — what each sees, the data and API calls behind each view, the permissions required, and the step-by-step referral lifecycle showing who does what and when.
+
+Patient view — goal: submit & track referrals, view appointments/outcomes
+
+Landing / Dashboard (top-of-page)
+Live status banner (EventSource/fetch ReadableStream → GET /referral/requests/{id}/events). Shows: current referral status (submitted / awaiting_documents / eligibility_checking / awaiting_specialist_approval / scheduled / completed), next appointment (if any), unread notifications.
+Quick CTAs: New Referral, My Referrals, Upload Documents, My Appointments, My Medical Records, Assistant chat.
+My Referrals (list)
+Data shown: referral.id, reason, status, created_at, assigned specialist name (if assigned), next scheduled appointment/time.
+API: GET /referral/requests?status_filter=... (operation_id list_referrals). Scoped by referral_visibility_filter so patient sees only referrals they are party to (permission: referral:view_own).
+Actions: View detail, Upload documents (POST /referral/requests/{id}/documents) — allowed if user is scoped to referral.
+New Referral form
+Fields: patient (pre-filled if linked), referring_doctor (select existing or free-text), reason/clinical notes, preferred specialty (optional), optional file upload step (documents are optional but required by intake for progress).
+API: POST /referral/requests/ (requires permission referral:create). Response 202 + background workflow run.
+UX: Explain required document types (referral letter + imaging/lab). On submit show success page and link to referral detail; SSE subscription begins automatically for that referral.
+Referral Detail (single)
+Tabs: Overview (status, timeline summary), Documents (list + upload), Workflow State (LangGraph state: extracted codes, specialist candidates), Timeline (GET /requests/{id}/timeline), Notes (GET /requests/{id}/notes), Outcome (GET /requests/{id}/outcome once available).
+Live: SSE stream via GET /referral/requests/{id}/events → updates on status changes.
+Assistant: POST /assistant/chat with session_id if the patient wants clarification (assistant uses role-specific prompt).
+Medical Records & Appointments
+GET /patients/{id}/context (unified view) — requires scoped access via patient:view_own.
+Appointments list: GET /appointments?patient_id=... or /slots + /slots/{id}/book for booking (slot booking is currently open to any authenticated user — consider tightening).
+Notifications
+GET /notifications/ (in-app inbox); new referral events generate notifications when created / scheduled / completed (create_notification invoked by background workflow).
+Edge cases & UX safety
+If user registered but not linked to a Patient row: show empty state with explicit CTA “Create my patient profile” or “Link existing patient” and explain admin linking requirement. (Current backend requires admin link for patient:view_own to return anything — fixable by self-onboard flow.)
+Doctor view — goal: refer (PCP), receive/manage referrals (specialist/doctor) Note: “Doctor” covers both PCP/referring doctor and specialist/doctor roles. The app distinguishes pcp vs. specialist in permissions; UI varies by purpose.
+
+Landing / Dashboard
+For PCP: patient quick-search, recent patients, “Refer patient” CTA, My Referrals (submitted by me), Notifications (outcome recorded for my referrals), Assistant chat (clinical queries).
+For Specialist: Inbox of referrals assigned to them or recommended, schedule snapshot (availability / upcoming visits), tasks requiring approval or outcome recording.
+Patient Context (primary tool)
+Unified contextual snapshot: demographics, insurance, appointments, medical records, open referrals/documents. API: GET /patients/{id}/context. Requires patient:view_all or patient:view_own as scoped.
+New Referral (PCP)
+Same POST /referral/requests/ as patient. PCPs have patient:manage and doctor:manage — can create patient rows if necessary.
+Referral Inbox & Review (Specialist / Doctor)
+List: GET /referral/requests/ filtered by specialist_id or status (scoped to referrals they are party to or referral:view_all for some doctor roles).
+Referral Detail: see the same detail page as patient, plus SpecialistNote creation UI and ability to add clinical notes and draft outcome? The app expects outcome recording by coordinator/doctor roles, so doctor role can record in some flows (referral:record_outcome for doctor role).
+Approvals: If workflow paused awaiting specialist approval, doctor (or care_coordinator) can resume via POST /referral-workflow/{id}/resume with doctor_id. Requires permission referral:approve (or admin:*).
+Scheduling & Slots
+Doctor/PCP can create availability: POST /schedule/availability (appointment:manage).
+Bookings: POST /slots/{id}/book or POST /slots/generate. Write access may be broader than intended — introduce stricter checks for who can book vs. who can create availability.
+Assistant
+POST /assistant/chat: resolves the caller’s most-privileged role and provides role-specific tool allowlist. Doctors get extra tools (workflow state, scheduling, timeline) if their role permits.
+Permissions summary (relevant)
+PCP: referral:create, patient:view_all, patient:manage, appointment:manage, medical_record:manage.
+Specialist: referral:view_own, referral:approve (some), patient:view_all, appointment:manage, medical_record:manage.
+Doctor (POC role): may be given referral:view_all, referral:approve, referral:record_outcome — used by tests/flows where provider-directory candidates aren’t linked to a real login.
+Care Coordinator view — goal: orchestrate workflow, approve specialists, schedule, record outcomes, analytics
+
+Landing / Dashboard
+Central queue view with filters: status buckets (awaiting_documents, awaiting_specialist_approval, eligibility_denied, scheduling_delayed, scheduled, completed).
+Top KPIs: referrals by status funnel, avg time-to-schedule, delay-risk count, denial rate (GET /analytics/referrals/summary requires analytics:view).
+Referral detail (operational)
+Full workflow state (GET /referral-workflow/{id}/state): specialist candidates, eligibility decisions, extracted codes — actionable UI to pick a specialist and resume workflow.
+Buttons: “Approve specialist” (POST /referral-workflow/{id}/resume {doctor_id}) — requires referral:approve; “Override decision” (PATCH /referral/requests/{id} with specialist_id/status) — requires referral:override or admin:*; “Record outcome” (POST /referral/requests/{id}/outcome) — requires referral:record_outcome.
+Timeline: GET /requests/{id}/timeline (Outbox events) — shows durable milestones and human labels.
+Document intake: see uploaded ReferralDocument rows (GET /requests/{id}/documents) and extraction results. Uploads can re-trigger workflow (background run_referral_workflow).
+Scheduling & calendar
+Full scheduling UI to generate slots (POST /slots/generate), view availability, and book appointments on behalf of patients (POST /slots/{id}/book) or call the scheduling mock.
+Should surface predicted scheduling delays and let coordinator reassign/accelerate referrals.
+Notifications & assistant
+The assistant includes workflow-state, scheduling, timeline, analytics tools for care_coordinator role.
+Audit and safety
+Create notifications to referring doctors when an outcome is recorded. All coordinator actions are audited (log_action is used across these endpoints).
+Permissions & visibility
+Care coordinator has broad referral:view_all and patient:view_all; they are the only role expected to see all referrals in the system and act on paused LangGraph runs.
+How these three roles interact — step-by-step lifecycle and UI/API mapping
+
+Onboarding / Setup
+Patient signs up → ideally UI calls POST /patients to create and link Patient row; user granted patient role. (Current repo requires admin link; UX should be improved.)
+PCP/Doctor accounts are linked to Doctor rows via admin invitation/claim workflow (or admin grants roles via POST /admin/users/{id}/roles).
+Referral creation (actor: Patient or PCP)
+UI: Patient/PCP fills referral form → POST /referral/requests/ (permission referral:create).
+Backend: ReferralRequest created, workflow_thread_id set, outbox event "referral.submitted" written, run_referral_workflow queued as background task.
+UI: Redirect to Referral Detail and open SSE stream to see updates.
+Intake & document handling (system + patient)
+Intake node reads referral.reason and attached documents (if any). If required docs missing → status AWAITING_DOCUMENTS. UI for patient displays required document types and upload CTA.
+Upload flow: POST /referral/requests/{id}/documents (creates ReferralDocument, sets extraction_status queued). If referral still in early states, background job re-runs run_referral_workflow and intake picks up newly uploaded docs.
+Eligibility & specialist recommendation (system)
+Workflow calls payer mock (MCP tool) to check eligibility; calls provider_directory mock to produce ranked specialist candidates.
+Outbox events: referral.eligibility.verified or referral.eligibility.denied; referral.specialist.recommended with candidate list.
+UI:
+Patient/PCP sees eligibility result in Referral Detail.
+Coordinator sees candidate list in Workflow State tab and gets a task in their queue if the run paused for approval.
+Human-in-loop approval (actor: Care Coordinator or Doctor)
+Workflow pauses at await_specialist_approval. Coordinator selects a candidate (UI selects one candidate with button “Approve”).
+API: POST /referral-workflow/{id}/resume {doctor_id} (requires referral:approve). This resumes LangGraph run.
+Outbox: write event for specialist selection and status change.
+UI: SSE updates status to scheduled or scheduling_delayed once scheduling runs.
+Scheduling (system + coordinator/patient)
+Scheduler node calls scheduling mock to book a slot; may create Appointment in DB.
+If the patient self-books: POST /slots/{id}/book (careful: booking is currently open to any authenticated user. Consider gating).
+Outbox: referral.appointment.scheduled event. Notifications sent to patient and referring doctor (if they have a platform user).
+Consult & Outcome (actor: Care Coordinator / Doctor)
+After consult, outcome is recorded: POST /referral/requests/{id}/outcome (requires referral:record_outcome).
+This writes ReferralOutcome, sets ReferralRequest.status = completed, writes outbox referral.completed, and triggers generate_completion_summary background task which creates a MedicalRecord for patient.
+UI: Patient sees completed outcome in Referral Detail > Outcome and in Medical Records.
+Follow-up & analytics
+Coordinator uses analytics panel for throughput, denial rate, delay-risk.
+Audit logs (GET /audit/) are available to admin/audit:view to inspect actions.
+Concrete API → UI mappings (quick reference)
+
+Register/login: POST /auth/register, POST /auth/login. After login call GET /auth/me to get roles & permissions for client gating.
+Create patient (if allowed): POST /patients/ (permission: patient:manage).
+Create referral: POST /referral/requests/ (permission: referral:create).
+Upload document: POST /referral/requests/{id}/documents.
+View timeline: GET /referral/requests/{id}/timeline (outbox events).
+Stream events: GET /referral/requests/{id}/events (SSE).
+Resume workflow after approval: POST /referral-workflow/{id}/resume (permission: referral:approve).
+Record outcome: POST /referral/requests/{id}/outcome (permission: referral:record_outcome).
+Assistant chat: POST /assistant/chat (any role; role-specific behavior server-side).
+UI behavior rules & UX recommendations to make flows clear
+
+Always show server-provided permissions from GET /auth/me and use them to enable/disable CTAs (but server must re-check on action).
+If a logged-in user lacks a linked Patient/Doctor row and tries to open a page, show an explicit “You’re not linked to a patient/doctor profile yet” modal with the single-click option to create or request linking — this avoids “empty screen” confusion.
+For specialist recommendations, show them as “Suggested specialists (requires coordinator confirmation)” and expose a “Create invite / send to doctor” button to turn a candidate into a real platform Doctor row (or send an admin invite).
+For document intake, display the two required doc types and current upload state (missing / queued / extracted → show extraction results). When extraction completes, show extracted ICD-10/CPT codes and how they influenced specialist recommendation.
+For paused workflows, present a clear actionable panel to coordinators with candidate list, eligibility summary, and a single prominent “Approve selected specialist” button. Include “See full patient context” and “Open timeline” quick links.
+Notifications: deliver email/in-app notifications on referral.submitted (to coordinator), appointment scheduled (to patient and referring doctor if linked), referral.completed (to patient + referring doctor).
+Common edge cases & how to handle them in UI/logic
+
+User registered but not linked to a Patient: allow immediate self-create & link or an “I represent this patient” flow. Mark as verified later if needed.
+Specialist recommendation points to external provider (no platform user): coordinator must confirm and select “Assign a platform doctor” or “Create placeholder doctor record and notify.” Avoid automatically marking assigned specialist as able to record outcome.
+Scheduling conflicts: surface conflict resolution UI to coordinator; mark slots as “patient-bookable” so only intended slots are bookable by patients.
+Missing doc reprocessing: when a document is uploaded in an early state the backend re-runs graph (current repo already does this) — show a transient “reprocessing” state in the referral detail.
+Security & permission checks to keep in mind
+
+Every UI action should correspond to a server permission check (do not rely only on client gating). Important ones:
+referral:create — create referral
+referral:view_own / referral:view_all — list/get referrals
+referral:approve — resume paused workflow / approve specialists
+referral:override — edit/referral override
+referral:record_outcome — record outcome and complete referral
+patient:manage / patient:view_all / patient:view_own — create & view patient contexts
+appointment:manage — create/update availability and slots
+Row-level visibility filters (record_scope/referral_scope) mean that “view_own” responses can be empty if a user isn’t linked to a clinical record. Client must show clear CTAs to resolve that linkage.
+Putting it together — a short narrative example
+
+Patient Alice registers and self-creates a Patient profile. She files a referral for lower back pain via the New Referral UX (POST /referral/requests, permission referral:create).
+The workflow runs: intake extracts ICD codes, eligibility node calls payer mock (eligibility verified), specialist_node suggests 3 orthopedics providers. Workflow pauses for coordinator approval.
+Care Coordinator Beth’s dashboard shows the referral in “awaiting_specialist_approval.” She opens the Referral Detail, reviews recommended specialists and extracted codes, chooses Dr. Lee from the candidate list, clicks “Approve” → POST /referral-workflow/{id}/resume with Dr. Lee’s id (permission referral:approve).
+Scheduler runs and books the next available slot; outbox publishes referral.appointment.scheduled and patient Alice receives an in-app notification and sees the appointment on her dashboard.
+After the consult, Coordinator Beth records an outcome (POST /requests/{id}/outcome). The workflow writes a referral.completed outbox event, generates a summarized MedicalRecord, and Alice sees the consult summary in her Medical Records.

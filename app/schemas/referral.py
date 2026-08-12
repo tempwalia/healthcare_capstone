@@ -57,6 +57,20 @@ class ResumeDecision(BaseModel):
     decision that unpauses the graph at `await_specialist_approval`."""
 
     doctor_id: int
+    # Optional: maps the mock directory's synthetic `doctor_id` above onto a
+    # real platform Doctor row (creates/overwrites a ProviderDirectoryLink).
+    # Omitted entirely, resume behaves exactly as before this existed.
+    platform_doctor_id: Optional[int] = None
+
+
+class ProviderDirectoryLinkResponse(BaseModel):
+    id: int
+    source_system: str
+    external_doctor_id: int
+    doctor_id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SpecialistNoteResponse(BaseModel):
@@ -77,7 +91,12 @@ class ReferralOutcomeCreate(BaseModel):
 
 class ReferralOutcomeResponse(ReferralOutcomeCreate):
     id: int
-    referral_request_id: int
+    # Exactly one of these two is set — see app/models/referral.py's
+    # ReferralOutcome docstring. Both Optional now that a consult outcome
+    # can be recorded against a direct-booked appointment with no referral
+    # involved at all (app/api/routes/appointments.py's outcome routes).
+    referral_request_id: Optional[int] = None
+    appointment_id: Optional[int] = None
     recorded_by_user_id: int
     interaction_summary: Optional[str] = None
     created_at: datetime

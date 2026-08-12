@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { getState } from "../state.js";
 import { el } from "../utils.js";
+import { renderMarkdown } from "../markdown.js";
 
 function sessionId() {
   let id = sessionStorage.getItem("assistant_session_id");
@@ -48,7 +49,16 @@ export async function render(container) {
   );
 
   function appendMessage(role, text) {
-    chatWindow.appendChild(el("div", { class: `chat-msg ${role}` }, text));
+    const bubble = el("div", { class: `chat-msg ${role}` });
+    if (role === "assistant") {
+      // Backend prompts the model to answer in markdown (headings, bold,
+      // lists, tables) instead of raw JSON — render that structure instead
+      // of dumping the raw "**bold**" / "| a | b |" syntax as plain text.
+      bubble.appendChild(el("div", { class: "chat-msg-md", html: renderMarkdown(text) }));
+    } else {
+      bubble.textContent = text;
+    }
+    chatWindow.appendChild(bubble);
     chatWindow.scrollTop = chatWindow.scrollHeight;
   }
 

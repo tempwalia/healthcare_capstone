@@ -2,9 +2,9 @@ import json
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_active_user, require_permission
@@ -123,19 +123,86 @@ async def list_referrals(
     request: Request,
     skip: int = 0,
     limit: int = 100,
-    status_filter: Optional[str] = None,
+    # Deliberately `List[str] = Query([])`, not `Optional[List[str]] = Query(None)`:
+    # the installed fastapi_mcp (app/../.venv/Lib/site-packages/fastapi_mcp/openapi/convert.py
+    # ~L227) injects a spurious top-level `"type": "array"` onto any query-param
+    # schema that lacks a top-level `type` key — which an `anyOf: [array, null]`
+    # schema (what Optional[List[str]] produces) always does. The result is a
+    # tool schema that requires the value be BOTH `anyOf [array, null]` AND
+    # `type: array`, so a valid `null` (an LLM's normal way of saying "omit this
+    # optional filter") gets rejected as "expected array, but got null" — this
+    # is exactly the assistant 500 a patient hit asking about referral status.
+    # A concrete `[]` default keeps the schema a plain `{"type": "array"}` with
+    # no anyOf, so that injection is a no-op and the field stays legitimately
+    # optional (not required, empty list treated as "no filter" below).
+    status_filter: List[str] = Query([]),
+    q: Optional[str] = None,
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_active_user),
 ):
+    """`q` free-text searches within whatever this caller's visibility scope
+    already allows — never a broader search than what list_referrals would
+    return unfiltered, just a narrower one. Matches the reason/preferred_location
+    text or an exact numeric id, so "knee" or "referral #42" both work."""
     scope = await referral_visibility_filter(db, current_user)
     base_query = select(ReferralRequest).where(ReferralRequest.deleted_at.is_(None))
     if scope is not None:
         base_query = base_query.where(scope)
     if status_filter:
-        base_query = base_query.where(ReferralRequest.status == status_filter)
+        base_query = base_query.where(ReferralRequest.status.in_(status_filter))
+    if q and q.strip():
+        term = q.strip()
+        conditions = [
+            ReferralRequest.reason.ilike(f"%{term}%"),
+            ReferralRequest.preferred_location.ilike(f"%{term}%"),
+        ]
+        if term.lstrip("#").isdigit():
+            conditions.append(ReferralRequest.id == int(term.lstrip("#")))
+        base_query = base_query.where(or_(*conditions))
 
     total = (await db.execute(select(func.count()).select_from(base_query.subquery()))).scalar_one()
     result = await db.execute(base_query.order_by(ReferralRequest.id.desc()).offset(skip).limit(limit))
+    return build_page(request, result.scalars().all(), total, skip, limit)
+
+
+# Registered before `/requests/{referral_id}` deliberately: that route's
+# `referral_id: int` conversion happens *after* Starlette's path match, not
+# during it, so if `{referral_id}` were registered first, a request for this
+# literal "ops-queue" segment would match it first and 422 on int conversion
+# rather than ever reaching this route.
+@router.get("/requests/ops-queue", response_model=Page[ReferralRequestResponse], operation_id="list_ops_queue_referrals")
+async def list_ops_queue_referrals(
+    request: Request,
+    skip: int = 0,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(require_permission("referral:approve")),
+):
+    """The care coordinator worklist: referrals that need a human decision
+    right now, bucketed by what's blocking them — awaiting a specialist
+    pick, denied eligibility needing escalation, or scheduled with no
+    consult outcome recorded yet. Same visibility filter as list_referrals
+    for defense-in-depth, even though referral:approve holders (coordinator/
+    admin) already resolve it to "no restriction" today."""
+    outcome_exists = (
+        select(ReferralOutcome.id)
+        .where(ReferralOutcome.referral_request_id == ReferralRequest.id)
+        .exists()
+    )
+    base_query = select(ReferralRequest).where(
+        ReferralRequest.deleted_at.is_(None),
+        or_(
+            ReferralRequest.status == ReferralWorkflowStatus.AWAITING_SPECIALIST_APPROVAL.value,
+            ReferralRequest.status == ReferralWorkflowStatus.ELIGIBILITY_DENIED.value,
+            and_(ReferralRequest.status == ReferralWorkflowStatus.SCHEDULED.value, ~outcome_exists),
+        ),
+    )
+    scope = await referral_visibility_filter(db, current_user)
+    if scope is not None:
+        base_query = base_query.where(scope)
+
+    total = (await db.execute(select(func.count()).select_from(base_query.subquery()))).scalar_one()
+    result = await db.execute(base_query.order_by(ReferralRequest.updated_at.asc()).offset(skip).limit(limit))
     return build_page(request, result.scalars().all(), total, skip, limit)
 
 
@@ -319,19 +386,18 @@ async def record_referral_outcome(
     current_user: User = Depends(require_permission("referral:record_outcome")),
 ):
     """Records what actually happened at the consult — symptoms, diagnosis,
-    prescription, follow-up notes. Recorded by care coordination staff, not
-    "the specialist": the AI-recommended specialist's doctor_id comes from
-    the mock provider directory's synthetic ID space, not a real platform
-    user (see Phase 6/8 notes), so a coordinator relaying the consult report
-    is the realistic actor. Moves the referral to `completed` and kicks off
-    the whole-care-journey summary in the background."""
-    referral = (
-        await db.execute(
-            select(ReferralRequest).where(ReferralRequest.id == referral_id, ReferralRequest.deleted_at.is_(None))
-        )
-    ).scalar_one_or_none()
-    if not referral:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Referral not found")
+    prescription, follow-up notes. `specialist` now also holds
+    referral:record_outcome (a real platform doctor can be mapped onto a
+    referral's specialist_id via ProviderDirectoryLink at approval time — see
+    resume_workflow — making "the specialist completes their own referral" a
+    real, working flow, not just care-coordinator relay). Uses
+    _get_scoped_referral, not a raw unscoped lookup: `referral:record_outcome`
+    alone would otherwise let a `view_own`-scoped specialist record an
+    outcome for a referral they were never assigned to (view_all-scoped
+    roles — care_coordinator/doctor/admin — are unaffected, same as every
+    other _get_scoped_referral caller). Moves the referral to `completed`
+    and kicks off the whole-care-journey summary in the background."""
+    referral = await _get_scoped_referral(db, current_user, referral_id)
 
     existing = (
         await db.execute(select(ReferralOutcome).where(ReferralOutcome.referral_request_id == referral_id))
@@ -360,13 +426,19 @@ async def record_referral_outcome(
             body=f"A consult outcome has been recorded for referral #{referral.id}.",
             referral_id=referral.id,
         )
-    # else: referring doctor has no linked platform login to notify — same
-    # best-effort skip as notify_node's patient-side case.
+    else:
+        # Same best-effort skip as notify_node's patient-side case — now
+        # audit-logged too, matching eligibility_node's equivalent skip.
+        await log_action(
+            db, actor_id=None, action="referral.notification.skipped",
+            resource_type="referral_request", resource_id=referral.id,
+            details={"reason": "referring doctor has no linked user account", "event": "outcome_recorded"},
+        )
 
     await db.commit()
     await db.refresh(outcome)
 
-    background_tasks.add_task(generate_completion_summary, referral.id)
+    background_tasks.add_task(generate_completion_summary, outcome.id)
     return outcome
 
 

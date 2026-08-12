@@ -97,10 +97,13 @@ async def test_doctor_sees_only_their_own_appointments(
 async def test_doctor_sees_only_their_own_medical_records(
     test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
 ):
-    # care_coordinator holds medical_record:view_all but deliberately not
-    # :manage (coordinators don't author clinical notes) — use pcp to seed
-    # the fixture records instead.
-    await _grant_role(test_session, test_user_data["username"], "pcp")
+    # care_coordinator (medical_record:view_all + :manage, unrestricted) to
+    # seed two records under two different doctors — a view_own-scoped role
+    # like pcp/specialist can no longer author a record under a doctor_id
+    # that isn't its own linked doctor (see test_medical_records.py's
+    # test_specialist_cannot_author_a_record_under_another_doctors_name),
+    # so seeding via one of those would fail before the actual test begins.
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
     patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
     doctor_a = (await test_client.post("/doctors/", json=test_doctor_data, headers=auth_headers)).json()
     other_doctor_data = {**test_doctor_data, "email": "other.doc2@example.com", "license_number": "MD888888"}

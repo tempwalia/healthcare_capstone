@@ -12,13 +12,26 @@ from app.auth.jwt_handler import create_access_token
 from app.auth.refresh_tokens import hash_token, is_expired, issue_refresh_token, rotate_refresh_token
 from app.core.rate_limit import limiter
 from app.core.security import get_password_hash, verify_password
+from app.core.seed_data import random_patient_profile
+from app.models.patient import Patient
 from app.models.refresh_token import RefreshToken
-from app.models.role import Role
+from app.models.role import Role, UserRole
 from app.models.user import User
 from app.schemas.auth import MeResponse, RefreshRequest, Token, UserCreate, UserResponse
 from app.services.audit import log_action
+from app.services.insurance import random_policy
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+
+@router.get("/sample-patient-data")
+async def get_sample_patient_data():
+    """Unauthenticated by design — this is a pre-registration convenience
+    (the "Fill Sample Data" button on the Register screen), purely synthetic
+    data with no real person behind it (see app/core/seed_data.py). Returns
+    a full registration payload the frontend pre-fills and the user can
+    still edit before submitting; nothing here is written to the database."""
+    return random_patient_profile()
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -31,6 +44,14 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_async_s
     if result.scalar_one_or_none():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Username already taken")
 
+    if user_data.register_as_patient:
+        # Patient.email carries its own separate unique index from User.email
+        # (not exempted by soft delete) — checked explicitly so a collision
+        # surfaces as a clean 400 instead of an unhandled IntegrityError.
+        result = await db.execute(select(Patient).where(Patient.email == user_data.email))
+        if result.scalar_one_or_none():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "A patient record already uses this email")
+
     user = User(
         email=user_data.email,
         username=user_data.username,
@@ -38,6 +59,51 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_async_s
     )
     db.add(user)
     await db.flush()
+
+    if user_data.register_as_patient:
+        insurance_provider = user_data.insurance_provider
+        insurance_policy_number = user_data.insurance_policy_number
+        # Same "blank insurance gets a random demo policy" fallback as
+        # POST /patients/ (app/api/routes/patients.py::create_patient) — a
+        # self-registered patient's eligibility checks shouldn't be any less
+        # likely to work than an admin-created one just because they skipped
+        # the field.
+        if not insurance_provider and not insurance_policy_number:
+            insurance_policy_number, insurance_provider = random_policy()
+
+        patient = Patient(
+            user_id=user.id,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name,
+            email=user_data.email,
+            date_of_birth=user_data.date_of_birth,
+            gender=user_data.gender,
+            phone=user_data.phone,
+            insurance_provider=insurance_provider,
+            insurance_policy_number=insurance_policy_number,
+            allergies=user_data.allergies,
+        )
+        db.add(patient)
+        await db.flush()
+
+        result = await db.execute(select(Role).where(Role.name == "patient"))
+        role = result.scalar_one_or_none()
+        if role is None:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "The 'patient' role is not seeded — run scripts/seed_roles.py",
+            )
+        # A direct join-row insert, not `user.roles.append(role)`: `user` is
+        # freshly constructed in this request (never loaded with `roles`
+        # eager-loaded, unlike admin.py's grant-role path), so touching the
+        # relationship collection here would trigger a synchronous lazy-load
+        # that isn't valid under an async session (MissingGreenlet).
+        db.add(UserRole(user_id=user.id, role_id=role.id))
+        await log_action(
+            db, actor_id=user.id, action="patient.self_register",
+            resource_type="patient", resource_id=patient.id,
+        )
+
     await log_action(db, actor_id=user.id, action="auth.register", resource_type="user", resource_id=user.id)
     await db.commit()
     await db.refresh(user)

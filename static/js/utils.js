@@ -152,6 +152,21 @@ export function debounce(fn, wait = 250) {
   };
 }
 
+// A shimmering placeholder block for views whose first load is a real
+// network round-trip worth covering (Ops Queue, My Day) — the plain
+// ".loading-line" text elsewhere in the app is a cheaper, sufficient signal
+// for smaller fetches, so this isn't a wholesale replacement for it.
+export function skeletonBlock(lines = 3) {
+  const host = document.createElement("div");
+  host.className = "skeleton-block";
+  for (let i = 0; i < lines; i++) {
+    const line = document.createElement("div");
+    line.className = "skeleton-line";
+    host.appendChild(line);
+  }
+  return host;
+}
+
 export function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {

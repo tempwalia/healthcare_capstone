@@ -34,6 +34,12 @@ class Appointment(Base, SoftDeleteMixin):
     location = Column(String(255))
     reminder_sent = Column(Integer, default=0)
     follow_up_required = Column(Integer, default=0)
+    # Only populated for appointments the referral workflow itself books
+    # (scheduling_node, once a specialist candidate has been mapped to a
+    # real Doctor row via ProviderDirectoryLink) — NULL for every
+    # appointment created through the manual /appointments/ or "Book an
+    # Appointment" flows.
+    referral_id = Column(Integer, ForeignKey("referral_requests.id"), nullable=True)
 
     patient = relationship("Patient", back_populates="appointments")
     doctor = relationship("Doctor", back_populates="appointments")

@@ -35,7 +35,15 @@
 
   --sidebar-w: 248px;
   --topbar-h: 60px;
+
+  /* Ambient "which space am I in" accent — set on <body data-role-accent>
+     by app.js from the caller's resolved primary role. Defaults to a
+     neutral gridline so admin/payer_admin/unroled sessions see no change. */
+  --role-accent: var(--gridline);
 }
+body[data-role-accent="coordinator"] { --role-accent: var(--primary); }
+body[data-role-accent="provider"] { --role-accent: var(--secondary); }
+body[data-role-accent="patient"] { --role-accent: var(--sequential); }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -156,6 +164,16 @@ label { display: block; font-weight: 600; font-size: 12.5px; color: var(--ink-2)
 }
 .user-card .name { font-weight: 650; font-size: 13px; }
 .user-card .roles { font-size: 11.5px; color: var(--ink-3); }
+.role-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.role-badge {
+  font-size: 10px; font-weight: 650; text-transform: capitalize;
+  padding: 2px 7px; border-radius: 20px; background: var(--neutral-tint); color: var(--ink-2);
+}
+.role-badge-care_coordinator { background: var(--primary-tint); color: var(--primary-dark); }
+.role-badge-pcp, .role-badge-specialist { background: var(--secondary-tint); color: var(--secondary); }
+.role-badge-patient { background: var(--good-tint); color: var(--good); }
+.role-badge-payer_admin { background: var(--warning-tint); color: var(--warning); }
+.role-badge-admin { background: var(--critical-tint); color: var(--critical); }
 
 .main { display: flex; flex-direction: column; min-width: 0; }
 .topbar {
@@ -168,6 +186,11 @@ label { display: block; font-weight: 600; font-size: 12.5px; color: var(--ink-2)
 .topbar h1 { font-size: 17px; }
 .topbar-actions { display: flex; gap: 8px; align-items: center; }
 .view { padding: 22px; flex: 1; min-width: 0; }
+.view-enter { animation: view-fade-in 0.18s ease; }
+@keyframes view-fade-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .view-enter { animation: none; }
+}
 
 .sidebar-toggle {
   display: none; position: fixed; top: 12px; left: 12px; z-index: 30;
@@ -181,6 +204,13 @@ label { display: block; font-weight: 600; font-size: 12.5px; color: var(--ink-2)
   padding: 18px; box-shadow: var(--shadow-sm);
 }
 .card + .card { margin-top: 16px; }
+.view-accent-bar { border-top: 3px solid var(--role-accent); }
+.card-interactive { transition: box-shadow 0.15s ease, transform 0.15s ease; }
+.card-interactive:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+@media (prefers-reduced-motion: reduce) {
+  .card-interactive { transition: none; }
+  .card-interactive:hover { transform: none; }
+}
 .card-header {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 14px; gap: 12px; flex-wrap: wrap;
@@ -287,6 +317,17 @@ tbody tr.clickable { cursor: pointer; }
 .stat-tile.accent-warning .value { color: var(--warning); }
 .stat-tile.accent-serious .value { color: var(--serious); }
 
+/* ---------- Worklist cards (Ops Queue / My Day) ---------- */
+.queue-card-list { display: flex; flex-direction: column; gap: 10px; }
+.queue-card {
+  border: 1px solid var(--gridline); border-left: 3px solid var(--gridline); border-radius: var(--radius-md);
+  padding: 12px 14px; background: var(--plane);
+}
+.queue-card[data-accent="warning"] { border-left-color: var(--warning); }
+.queue-card[data-accent="serious"] { border-left-color: var(--serious); }
+.queue-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.queue-card-top a { font-weight: 650; }
+
 /* ---------- Charts (hand-rolled inline SVG) ---------- */
 .chart-title { font-size: 13px; font-weight: 650; margin-bottom: 10px; }
 .bar-chart-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
@@ -356,9 +397,30 @@ tbody tr.clickable { cursor: pointer; }
 }
 .chat-msg { max-width: 72%; padding: 9px 13px; border-radius: 14px; font-size: 13.5px; line-height: 1.45; }
 .chat-msg.user { align-self: flex-end; background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
-.chat-msg.assistant { align-self: flex-start; background: var(--plane); color: var(--ink-1); border-bottom-left-radius: 4px; }
+.chat-msg.assistant { align-self: flex-start; max-width: 90%; background: var(--plane); color: var(--ink-1); border-bottom-left-radius: 4px; }
 .chat-input-row { display: flex; gap: 8px; margin-top: 12px; }
 .chat-input-row input { flex: 1; }
+
+/* Structured assistant replies (headings/lists/tables) rendered by
+   static/js/markdown.js from the model's markdown-formatted answer. */
+.chat-msg-md > *:first-child { margin-top: 0; }
+.chat-msg-md > *:last-child { margin-bottom: 0; }
+.chat-msg-md p { margin: 6px 0; }
+.chat-msg-md h1, .chat-msg-md h2, .chat-msg-md h3, .chat-msg-md h4 { margin: 12px 0 6px; font-weight: 700; line-height: 1.3; }
+.chat-msg-md h1 { font-size: 16px; }
+.chat-msg-md h2 { font-size: 15px; }
+.chat-msg-md h3, .chat-msg-md h4 { font-size: 13.5px; }
+.chat-msg-md ul, .chat-msg-md ol { margin: 6px 0; padding-left: 20px; }
+.chat-msg-md li { margin: 3px 0; }
+.chat-msg-md strong { font-weight: 700; }
+.chat-msg-md code { background: rgba(0, 0, 0, 0.06); padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }
+.chat-msg-md pre { background: rgba(0, 0, 0, 0.06); padding: 8px 10px; border-radius: 8px; overflow-x: auto; margin: 6px 0; }
+.chat-msg-md pre code { background: none; padding: 0; }
+.chat-msg-md hr { border: none; border-top: 1px solid var(--gridline); margin: 10px 0; }
+.chat-msg-md .table-wrap { margin: 6px 0; }
+.chat-msg-md table { min-width: 0; }
+.chat-msg-md thead th { padding: 6px 9px; font-size: 10.5px; }
+.chat-msg-md tbody td { padding: 6px 9px; font-size: 12.5px; }
 
 /* ---------- Auth screen ---------- */
 .auth-screen {
@@ -377,11 +439,29 @@ tbody tr.clickable { cursor: pointer; }
 }
 .auth-tabs button.active { background: var(--primary); color: #fff; }
 .auth-footer-health { margin-top: 16px; text-align: center; }
+.radio-row { display: flex; gap: 16px; margin-bottom: 14px; }
+.radio-option { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); font-weight: 500; cursor: pointer; }
+.radio-option input { width: auto; margin: 0; }
+.patient-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 
 /* ---------- Empty / loading states ---------- */
 .loading-line { color: var(--ink-3); font-size: 13px; padding: 18px 0; }
 .empty-state { text-align: center; color: var(--ink-3); padding: 36px 16px; }
 .empty-state .big { font-size: 28px; margin-bottom: 6px; }
+.skeleton-block { display: flex; flex-direction: column; gap: 8px; }
+.skeleton-line {
+  height: 14px; border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--neutral-tint) 25%, var(--gridline) 37%, var(--neutral-tint) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+.skeleton-line:nth-child(2) { width: 92%; }
+.skeleton-line:nth-child(3) { width: 78%; }
+.skeleton-line:nth-child(4) { width: 85%; }
+@keyframes skeleton-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-line { animation: none; background: var(--neutral-tint); }
+}
 
 /* ---------- Responsive ---------- */
 @media (max-width: 860px) {

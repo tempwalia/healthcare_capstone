@@ -52,6 +52,24 @@ async def get_doctors(
     return build_page(request, result.scalars().all(), total, skip, limit)
 
 
+@router.get("/me", response_model=DoctorResponse)
+async def get_my_doctor_record(
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Resolves "which Doctor row is mine" for a pcp/specialist account — the
+    one thing nothing in the API surfaced before (DoctorResponse has no
+    user_id). Registered before /{doctor_id} so "me" is never parsed as an
+    int doctor_id."""
+    result = await db.execute(
+        select(Doctor).where(Doctor.user_id == current_user.id, Doctor.deleted_at.is_(None))
+    )
+    doctor = result.scalar_one_or_none()
+    if not doctor:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No doctor record linked to your account")
+    return doctor
+
+
 @router.get("/{doctor_id}", response_model=DoctorResponse)
 async def get_doctor(
     doctor_id: int,

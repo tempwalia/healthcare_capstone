@@ -83,7 +83,10 @@ export default createResourceModule({
   singular: "Patient",
   basePath: "/patients",
   permissions: { create: "patient:manage", update: "patient:manage", delete: "patient:manage" },
-  searchableFields: ["first_name", "last_name", "email", "phone"],
+  // Server-side (GET /patients/?q=...), scoped by the caller's own
+  // visibility filter — not the client-side current-page-only search
+  // resource.js also supports (searchableFields), which this replaces here.
+  serverSearchParam: "q",
   columns: [
     { key: "id", label: "ID" },
     { key: "name", label: "Name", format: (r) => `${r.first_name} ${r.last_name}` },

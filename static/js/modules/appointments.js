@@ -2,6 +2,7 @@ import { api } from "../api.js";
 import { openModal } from "../components/modal.js";
 import { toast } from "../components/toast.js";
 import { createResourceModule } from "../resource.js";
+import { navigate } from "../router.js";
 import { hasPermission } from "../state.js";
 import { el, formatDateTime, appointmentStatusBadgeClass, capitalize, APPOINTMENT_STATUSES } from "../utils.js";
 
@@ -11,8 +12,11 @@ const NON_RESCHEDULABLE_STATUSES = ["completed", "cancelled", "no_show"];
 // generic edit/delete actions below never render for them — every row a
 // patient session sees is already their own appointment (that's what
 // appointment:view_own scopes to), so no extra ownership check is needed
-// here, just the permission split itself.
-function selfServiceActions(row, reload) {
+// here, just the permission split itself. Exported so the home dashboard's
+// upcoming-appointment card and the Scheduling page's "My Upcoming
+// Appointments" section can reuse the exact same reschedule/cancel
+// controls instead of re-implementing them a second and third time.
+export function selfServiceActions(row, reload) {
   if (hasPermission("appointment:manage") || !hasPermission("appointment:view_own")) return [];
   if (NON_RESCHEDULABLE_STATUSES.includes(row.status)) return [];
 
@@ -92,4 +96,5 @@ export default createResourceModule({
     { name: "status", label: "Status", type: "select", options: APPOINTMENT_STATUSES, numeric: false },
   ],
   extraActions: selfServiceActions,
+  onRowClick: (row) => navigate(`/appointments/${row.id}`),
 });

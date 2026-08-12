@@ -28,7 +28,8 @@ PERMISSIONS = [
 ROLE_PERMISSIONS = {
     "patient": [
         "referral:create", "referral:view_own",
-        "patient:view_own", "appointment:view_own", "medical_record:view_own",
+        "patient:view_own", "appointment:view_own",
+        "medical_record:view_own", "medical_record:manage",
     ],
     "pcp": [
         "referral:create", "referral:view_own",
@@ -37,17 +38,17 @@ ROLE_PERMISSIONS = {
         "medical_record:view_own", "medical_record:manage",
     ],
     "specialist": [
-        "referral:view_own", "referral:approve",
+        "referral:view_own", "referral:approve", "referral:record_outcome",
         "patient:view_all", "patient:manage", "doctor:manage",
         "appointment:view_own", "appointment:manage",
         "medical_record:view_own", "medical_record:manage",
     ],
     "care_coordinator": [
-        "referral:view_all", "referral:approve", "referral:override",
+        "referral:create", "referral:view_all", "referral:approve", "referral:override",
         "referral:record_outcome", "analytics:view",
         "patient:view_all", "patient:manage", "doctor:manage",
         "appointment:view_all", "appointment:manage",
-        "medical_record:view_all",
+        "medical_record:view_all", "medical_record:manage",
     ],
     "payer_admin": ["referral:view_all", "analytics:view"],
     "doctor": [

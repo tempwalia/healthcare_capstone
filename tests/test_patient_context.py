@@ -11,12 +11,13 @@ from tests.test_record_scope import _reset_roles
 async def test_context_aggregates_everything_visible_to_a_coordinator(
     test_client: AsyncClient, test_session, test_user_data, auth_headers, test_patient_data, test_doctor_data
 ):
-    # pcp holds the :manage/:create permissions needed to seed the fixtures;
-    # care_coordinator (granted after, for the actual assertion below) holds
-    # the *_view_all breadth instead, per the deliberate split in
-    # app/core/seed.py (care_coordinator never gets medical_record:manage —
-    # coordinators don't author clinical notes).
-    await _grant_role(test_session, test_user_data["username"], "pcp")
+    # care_coordinator both seeds the fixtures (holds referral:create,
+    # medical_record:manage, appointment:manage — all unrestricted, view_all
+    # shaped) and is the role under test below — no role-switch needed here
+    # unlike record-scoping tests, since this test isn't checking ownership
+    # restrictions, just that the aggregation surfaces everything a
+    # coordinator can see.
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
     patient = (await test_client.post(
         "/patients/",
         json={**test_patient_data, "insurance_provider": "Acme Health", "insurance_policy_number": "ACME-991123"},
@@ -52,9 +53,6 @@ async def test_context_aggregates_everything_visible_to_a_coordinator(
         },
         headers=auth_headers,
     )).json()
-
-    await _reset_roles(test_session, test_user_data["username"])
-    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
 
     response = await test_client.get(f"/patients/{patient['id']}/context", headers=auth_headers)
     assert response.status_code == 200

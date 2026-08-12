@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_active_user, require_permission
@@ -63,16 +64,70 @@ async def get_patients(
     request: Request,
     skip: int = 0,
     limit: int = 100,
+    q: Optional[str] = None,
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_active_user),
 ):
+    """`q` free-text searches name/email/phone within whatever this caller's
+    visibility scope already allows — previously the dashboard's search box
+    only filtered the current page client-side (a documented simplification,
+    see static/js/resource.js), which meant a patient outside the first page
+    was simply unfindable. Now a real, server-side, scope-respecting search."""
     scope = await patient_visibility_filter(db, current_user)
     base_query = select(Patient).where(Patient.deleted_at.is_(None))
     if scope is not None:
         base_query = base_query.where(scope)
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        base_query = base_query.where(
+            or_(
+                Patient.first_name.ilike(term),
+                Patient.last_name.ilike(term),
+                Patient.email.ilike(term),
+                Patient.phone.ilike(term),
+            )
+        )
     total = (await db.execute(select(func.count()).select_from(base_query.subquery()))).scalar_one()
     result = await db.execute(base_query.offset(skip).limit(limit))
     return build_page(request, result.scalars().all(), total, skip, limit)
+
+
+@router.get("/me", response_model=PatientResponse, operation_id="get_my_patient")
+async def get_my_patient_record(
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Resolves "which Patient row is mine" — the self-service counterpart to
+    GET /doctors/me. Registered before /{patient_id} so "me" is never parsed
+    as an int patient_id. Exists mainly so the assistant (and the dashboard)
+    never has to guess or be told a patient_id for "my own" questions."""
+    result = await db.execute(
+        select(Patient).where(Patient.user_id == current_user.id, Patient.deleted_at.is_(None))
+    )
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No patient record linked to your account")
+    return patient
+
+
+@router.get("/me/context", response_model=PatientContextResponse, operation_id="get_my_patient_context")
+async def get_my_patient_context(
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Same aggregation as GET /{patient_id}/context, self-scoped with no id
+    parameter at all — the assistant tool a `patient`-role caller gets
+    (app/agents/assistant_graph.py), instead of get_patient_context, so
+    there's never an id for the model to guess, mistype, or be tricked into
+    substituting. Registered before /{patient_id} for the same reason as
+    /me above."""
+    result = await db.execute(
+        select(Patient).where(Patient.user_id == current_user.id, Patient.deleted_at.is_(None))
+    )
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No patient record linked to your account yet")
+    return await gather_patient_context(db, current_user, patient.id)
 
 
 @router.get("/{patient_id}", response_model=PatientResponse)
@@ -84,7 +139,7 @@ async def get_patient(
     return await _get_scoped_patient(db, current_user, patient_id)
 
 
-@router.get("/{patient_id}/context", response_model=PatientContextResponse)
+@router.get("/{patient_id}/context", response_model=PatientContextResponse, operation_id="get_patient_context")
 async def get_patient_context(
     patient_id: int,
     db: AsyncSession = Depends(get_async_session),
@@ -96,7 +151,9 @@ async def get_patient_context(
     created it should already be available to all [roles that have a reason
     to see it]" instead of everyone hand-navigating four separate pages. Never
     broader than assembling the same four GETs by hand: every sub-list reuses
-    that resource's own visibility filter."""
+    that resource's own visibility filter. The staff-facing assistant tool
+    (pcp/specialist/care_coordinator/doctor/admin) — patient-role callers get
+    get_my_patient_context instead, which needs no id at all."""
     return await gather_patient_context(db, current_user, patient_id)
 
 

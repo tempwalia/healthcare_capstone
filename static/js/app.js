@@ -1,13 +1,17 @@
 import { getState, subscribe, hasPermission } from "./state.js";
 import { createRouter, navigate } from "./router.js";
 import { el } from "./utils.js";
+import { resolveLandingRoute, resolveRoleAccent } from "./landing.js";
 import * as authModule from "./modules/auth.js";
 import patientsModule from "./modules/patients.js";
 import * as patientDetailModule from "./modules/patient_detail.js";
 import doctorsModule from "./modules/doctors.js";
-import appointmentsModule from "./modules/appointments.js";
+import * as appointmentDetailModule from "./modules/appointment_detail.js";
 import medicalRecordsModule from "./modules/medical_records.js";
 import * as referralsModule from "./modules/referrals.js";
+import * as homeModule from "./modules/home.js";
+import * as opsQueueModule from "./modules/ops_queue.js";
+import * as myDayModule from "./modules/my_day.js";
 import * as scheduleModule from "./modules/schedule.js";
 import * as analyticsModule from "./modules/analytics.js";
 import * as auditModule from "./modules/audit.js";
@@ -16,12 +20,14 @@ import * as adminModule from "./modules/admin.js";
 import { mountNotificationBell } from "./components/notifications.js";
 
 const NAV_ITEMS = [
+  { path: "/home", label: "Home", icon: "🏠", roles: ["patient"] },
+  { path: "/ops-queue", label: "Ops Queue", icon: "📥", roles: ["care_coordinator"] },
+  { path: "/my-day", label: "My Day", icon: "🗓️", roles: ["pcp", "specialist"] },
   { path: "/patients", label: "Patients", icon: "🧑" },
   { path: "/doctors", label: "Doctors", icon: "🩺" },
-  { path: "/appointments", label: "Appointments", icon: "📅" },
   { path: "/medical-records", label: "Medical Records", icon: "📋" },
   { path: "/referrals", label: "Referrals", icon: "🔁" },
-  { path: "/schedule", label: "Scheduling", icon: "🗓" },
+  { path: "/schedule", label: "Scheduling & Appointments", icon: "🗓" },
   { path: "/analytics", label: "Analytics", icon: "📊", permission: "analytics:view" },
   { path: "/audit", label: "Audit Log", icon: "🧾", permission: "audit:view" },
   { path: "/assistant", label: "Assistant", icon: "💬" },
@@ -63,8 +69,11 @@ function pollHealth() {
 function renderNav() {
   navHost.innerHTML = "";
   const path = currentPath();
+  const { me } = getState();
+  const myRoles = new Set(me ? me.roles : []);
   for (const item of NAV_ITEMS) {
     if (item.permission && !hasPermission(item.permission)) continue;
+    if (item.roles && !item.roles.some((r) => myRoles.has(r))) continue;
     const active = path === item.path || path.startsWith(item.path + "/");
     const link = el("a", { class: `nav-item${active ? " active" : ""}`, href: `#${item.path}` }, [
       el("span", { class: "nav-icon" }, item.icon),
@@ -84,16 +93,28 @@ function renderUserCard() {
   logoutBtn.style.width = "100%";
   logoutBtn.addEventListener("click", authModule.logout);
 
+  const rolesHost = me.roles.length
+    ? el(
+        "div",
+        { class: "role-badges" },
+        me.roles.map((r) => el("span", { class: `role-badge role-badge-${r}` }, r.replace(/_/g, " ")))
+      )
+    : el("div", { class: "roles" }, "no role assigned yet");
+
   userCard.appendChild(
     el("div", { class: "who" }, [
       el("span", { class: "avatar" }, initials),
-      el("div", {}, [
-        el("div", { class: "name" }, me.username),
-        el("div", { class: "roles" }, me.roles.length ? me.roles.join(", ") : "no role assigned yet"),
-      ]),
+      el("div", {}, [el("div", { class: "name" }, me.username), rolesHost]),
     ])
   );
   userCard.appendChild(logoutBtn);
+}
+
+function applyRoleAccent() {
+  const { me } = getState();
+  const accent = resolveRoleAccent(me ? me.roles : []);
+  if (accent) document.body.dataset.roleAccent = accent;
+  else delete document.body.dataset.roleAccent;
 }
 
 // Two persistent children so a route change (which only needs to update the
@@ -112,6 +133,7 @@ function setTopbarTitle(title) {
 subscribe(() => {
   renderNav();
   renderUserCard();
+  applyRoleAccent();
   // Same state-change pub/sub login already notifies through (setTokens/
   // setMe) — closes the gap where the bell would otherwise wait up to 30s
   // after login for its first authenticated poll.
@@ -128,6 +150,12 @@ function guarded(title, renderFn) {
     authScreen.classList.add("hidden");
     shell.classList.remove("hidden");
     setTopbarTitle(title);
+    // Restart the fade-in on every route change — every guarded route
+    // passes through this one choke point, so this is the only place a
+    // route-transition animation needs to be wired.
+    view.classList.remove("view-enter");
+    void view.offsetWidth; // force reflow so the class removal above actually registers before re-adding it
+    view.classList.add("view-enter");
     return renderFn(view, params);
   };
 }
@@ -140,23 +168,43 @@ function authRoute(mode) {
   };
 }
 
+function redirectToLanding() {
+  const { accessToken, me } = getState();
+  if (!accessToken) {
+    navigate("/login");
+    return;
+  }
+  // Same shell-reveal `guarded()` would do — avoids a one-frame flash of
+  // the login screen while this redirect resolves to the real route.
+  authScreen.classList.add("hidden");
+  shell.classList.remove("hidden");
+  navigate(resolveLandingRoute(me ? me.roles : []));
+}
+
 const router = createRouter();
 router.add("/login", authRoute("login"));
 router.add("/register", authRoute("register"));
-router.add("/", guarded("Patients", patientsModule.render));
+router.add("/", redirectToLanding);
 router.add("/patients", guarded("Patients", patientsModule.render));
 router.add("/patients/:id", guarded("Patient", patientDetailModule.render));
 router.add("/doctors", guarded("Doctors", doctorsModule.render));
-router.add("/appointments", guarded("Appointments", appointmentsModule.render));
+// /appointments merged into /schedule (Scheduling & Appointments) — kept as
+// its own route (not just a redirect) so existing #/appointments links
+// (home.js's "My Appointments" CTA, bookmarks) still land on a real page.
+router.add("/appointments", guarded("Scheduling & Appointments", scheduleModule.render));
+router.add("/appointments/:id", guarded("Appointment Detail", appointmentDetailModule.render));
 router.add("/medical-records", guarded("Medical Records", medicalRecordsModule.render));
+router.add("/home", guarded("Home", homeModule.render));
 router.add("/referrals", guarded("Referrals", referralsModule.renderList));
 router.add("/referrals/:id", guarded("Referral Detail", referralsModule.renderDetail));
-router.add("/schedule", guarded("Scheduling", scheduleModule.render));
+router.add("/ops-queue", guarded("Ops Queue", opsQueueModule.render));
+router.add("/my-day", guarded("My Day", myDayModule.render));
+router.add("/schedule", guarded("Scheduling & Appointments", scheduleModule.render));
 router.add("/analytics", guarded("Analytics", analyticsModule.render));
 router.add("/audit", guarded("Audit Log", auditModule.render));
 router.add("/assistant", guarded("Assistant", assistantModule.render));
 router.add("/admin", guarded("Admin", adminModule.render));
-router.notFound(() => navigate("/patients"));
+router.notFound(redirectToLanding);
 
 async function boot() {
   pollHealth();

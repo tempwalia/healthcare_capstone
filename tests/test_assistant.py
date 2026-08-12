@@ -43,19 +43,49 @@ def test_resolve_role_for_tools_prefers_most_privileged():
 
 def test_resolve_role_for_tools_defaults_to_patient_for_unrecognized_role():
     assert resolve_role_for_tools(set()) == "patient"
-    assert resolve_role_for_tools({"payer_admin"}) == "patient"
+    assert resolve_role_for_tools({"totally_made_up_role"}) == "patient"
 
 
-def test_patient_tool_allowlist_excludes_unscoped_routes():
-    """The base allowlist must never include the unscoped patient/doctor/
-    appointment/medical-record routes — see the scoping note in
-    app/agents/assistant_graph.py."""
+def test_resolve_role_for_tools_recognizes_admin_and_payer_admin():
+    """Both were missing from _ROLE_PRECEDENCE entirely — a real bug (not a
+    scoping gap) where an admin or payer_admin caller silently fell back to
+    the most restrictive `patient` tools/prompt, producing confusing/wrong
+    assistant answers for those roles. admin outranks everything;
+    payer_admin sits below the clinical/coordination roles."""
+    assert resolve_role_for_tools({"admin"}) == "admin"
+    assert resolve_role_for_tools({"payer_admin"}) == "payer_admin"
+    assert resolve_role_for_tools({"admin", "care_coordinator"}) == "admin"
+    assert resolve_role_for_tools({"payer_admin", "patient"}) == "payer_admin"
+
+
+def test_tool_allowlist_excludes_unscoped_single_record_routes():
+    """No role should ever get a raw id-based get_patient/get_appointment/
+    get_medical_record/get_doctor tool — the assistant surface only exposes
+    self-scoped (get_my_patient_context) or list-scoped/aggregate
+    (get_patient_context, list_appointments, list_medical_records) reads, so
+    the model never needs to guess or be handed a specific record id."""
     for role, tools in ROLE_TOOL_ALLOWLIST.items():
         assert "get_patient" not in tools, role
         assert "get_appointment" not in tools, role
-        assert "list_appointments" not in tools, role
         assert "get_medical_record" not in tools, role
         assert "get_doctor" not in tools, role
+
+
+def test_patient_context_tools_scoped_correctly_per_role():
+    """patient gets only the self-scoped get_my_patient_context (never an
+    id-based patient-context tool it could point at someone else); every
+    staff role scoped through record_scope.py (pcp/specialist/
+    care_coordinator/doctor/admin) gets the id-based staff tools instead;
+    payer_admin gets neither — it holds no patient/appointment/
+    medical_record permission at all (app/core/seed.py)."""
+    assert ROLE_TOOL_ALLOWLIST["patient"] & {"get_patient_context", "list_appointments", "list_medical_records"} == set()
+    assert "get_my_patient_context" in ROLE_TOOL_ALLOWLIST["patient"]
+    for role in ("pcp", "specialist", "care_coordinator", "doctor", "admin"):
+        assert {"get_patient_context", "list_appointments", "list_medical_records"} <= ROLE_TOOL_ALLOWLIST[role], role
+        assert "get_my_patient_context" not in ROLE_TOOL_ALLOWLIST[role], role
+    assert ROLE_TOOL_ALLOWLIST["payer_admin"] & {
+        "get_patient_context", "list_appointments", "list_medical_records", "get_my_patient_context"
+    } == set()
 
 
 def test_only_care_coordinator_gets_the_timeline_and_analytics_tools():

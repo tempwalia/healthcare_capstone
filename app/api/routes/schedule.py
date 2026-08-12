@@ -23,6 +23,7 @@ from app.schemas.schedule import (
     GenerateSlotsRequest,
     ScheduleSlotResponse,
 )
+from app.services.appointment_dedup import reject_if_duplicate_appointment
 from app.services.audit import log_action
 
 router = APIRouter(prefix="/schedule", tags=["schedule"])
@@ -141,16 +142,27 @@ async def list_slots(
     request: Request,
     doctor_id: Optional[int] = None,
     is_booked: Optional[bool] = None,
+    upcoming_only: Optional[bool] = None,
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_active_user),
 ):
+    """`upcoming_only` exists for the "available slots to book" use case
+    (the Scheduling page's recommended-doctor flow) — a slot generated for a
+    date that's since passed is still technically `is_booked=False` (nobody
+    ever booked it), but offering it as bookable is a dead end/bug in its
+    own right, not just a UX nicety; see book_slot's matching guard below.
+    Left off by default so the plain "Schedule Slots" table (which staff use
+    to review the whole schedule, including past unbooked slots) keeps its
+    existing behavior."""
     base_query = select(ScheduleSlot).where(ScheduleSlot.deleted_at.is_(None))
     if doctor_id:
         base_query = base_query.where(ScheduleSlot.doctor_id == doctor_id)
     if is_booked is not None:
         base_query = base_query.where(ScheduleSlot.is_booked == is_booked)
+    if upcoming_only:
+        base_query = base_query.where(ScheduleSlot.starts_at >= datetime.now(timezone.utc))
 
     total = (await db.execute(select(func.count()).select_from(base_query.subquery()))).scalar_one()
     result = await db.execute(base_query.order_by(ScheduleSlot.starts_at).offset(skip).limit(limit))
@@ -169,8 +181,22 @@ async def book_slot(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Slot not found")
     if slot.is_booked:
         raise HTTPException(status.HTTP_409_CONFLICT, "Slot already booked")
+    # Belt-and-suspenders alongside list_slots's upcoming_only filter: a slot
+    # generated for a date that's since passed but never booked is still
+    # technically `is_booked=False` — reject booking it outright rather than
+    # trusting every caller to have queried with upcoming_only=true first.
+    # ensure_aware: SQLite round-trips DateTime(timezone=True) as naive
+    # (see app/core/time_utils.py) — comparing it directly against an aware
+    # `now()` would raise on SQLite-backed tests while working by accident
+    # on Postgres, the exact bug class this helper exists to prevent.
+    if ensure_aware(slot.starts_at) < datetime.now(timezone.utc):
+        raise HTTPException(status.HTTP_409_CONFLICT, "This slot is in the past and can no longer be booked")
     if not (await db.execute(select(Patient).where(Patient.id == data.patient_id, Patient.deleted_at.is_(None)))).scalar_one_or_none():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Patient not found")
+
+    await reject_if_duplicate_appointment(
+        db, patient_id=data.patient_id, doctor_id=slot.doctor_id, reason=data.reason
+    )
 
     appointment = Appointment(
         patient_id=data.patient_id,

@@ -1,5 +1,9 @@
-from httpx import AsyncClient
+from datetime import datetime, timedelta, timezone
 
+from httpx import AsyncClient
+from sqlalchemy import select
+
+from app.models.schedule import ScheduleSlot
 from tests.test_record_scope import _reset_roles
 from tests.test_referral import _grant_role, _link_patient_to_user
 
@@ -91,6 +95,108 @@ async def test_book_slot_creates_appointment_and_marks_slot_booked(
         "/schedule/slots/", params={"doctor_id": doctor["id"], "is_booked": False}, headers=auth_headers
     )).json()
     assert all(s["id"] != slot_id for s in remaining["items"])
+
+
+async def test_cannot_book_second_appointment_with_same_doctor_for_same_reason(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data, test_patient_data
+):
+    """app/services/appointment_dedup.py — a patient shouldn't be able to
+    stack two live appointments with the same doctor for the same stated
+    reason; a different reason, or the same reason with a different doctor,
+    is unaffected."""
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    doctor_a = await _create_doctor(test_client, auth_headers, test_doctor_data)
+    other_doctor_data = {**test_doctor_data, "email": "other.dedup.doc@example.com", "license_number": "MD777777"}
+    doctor_b = await _create_doctor(test_client, auth_headers, other_doctor_data)
+    patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
+    for doctor in (doctor_a, doctor_b):
+        await test_client.post(
+            "/schedule/availability/",
+            json={"doctor_id": doctor["id"], "weekday": 0, "start_time": "09:00", "end_time": "12:00", "slot_minutes": 30},
+            headers=auth_headers,
+        )
+    slots_a = (await test_client.post(
+        "/schedule/slots/generate", json={"doctor_id": doctor_a["id"], "days_ahead": 14}, headers=auth_headers
+    )).json()
+    slots_b = (await test_client.post(
+        "/schedule/slots/generate", json={"doctor_id": doctor_b["id"], "days_ahead": 14}, headers=auth_headers
+    )).json()
+
+    first = await test_client.post(
+        f"/schedule/slots/{slots_a[0]['id']}/book",
+        json={"patient_id": patient["id"], "reason": "Knee pain"},
+        headers=auth_headers,
+    )
+    assert first.status_code == 201
+
+    # Same doctor, same reason (case/whitespace-insensitive) -> rejected
+    duplicate = await test_client.post(
+        f"/schedule/slots/{slots_a[1]['id']}/book",
+        json={"patient_id": patient["id"], "reason": "  knee PAIN  "},
+        headers=auth_headers,
+    )
+    assert duplicate.status_code == 409
+
+    # Same doctor, different reason -> allowed
+    different_reason = await test_client.post(
+        f"/schedule/slots/{slots_a[2]['id']}/book",
+        json={"patient_id": patient["id"], "reason": "Annual physical"},
+        headers=auth_headers,
+    )
+    assert different_reason.status_code == 201
+
+    # Different doctor, same reason -> allowed
+    different_doctor = await test_client.post(
+        f"/schedule/slots/{slots_b[0]['id']}/book",
+        json={"patient_id": patient["id"], "reason": "Knee pain"},
+        headers=auth_headers,
+    )
+    assert different_doctor.status_code == 201
+
+
+async def test_upcoming_only_excludes_past_slots_and_booking_a_past_slot_is_rejected(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data, test_patient_data
+):
+    """A slot generated for a date that's since passed but never booked is
+    still technically is_booked=False — list_slots?upcoming_only=true must
+    exclude it (the query the Scheduling page's recommended-doctor flow now
+    uses), and book_slot must reject it outright as a second line of
+    defense, per app/api/routes/schedule.py::book_slot."""
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    doctor = await _create_doctor(test_client, auth_headers, test_doctor_data)
+    patient = (await test_client.post("/patients/", json=test_patient_data, headers=auth_headers)).json()
+    await test_client.post(
+        "/schedule/availability/",
+        json={"doctor_id": doctor["id"], "weekday": 0, "start_time": "09:00", "end_time": "10:00", "slot_minutes": 30},
+        headers=auth_headers,
+    )
+    slots = (await test_client.post(
+        "/schedule/slots/generate", json={"doctor_id": doctor["id"], "days_ahead": 14}, headers=auth_headers
+    )).json()
+    slot_id = slots[0]["id"]
+
+    # Backdate this slot directly — the generate endpoint never produces a
+    # past slot itself, so this simulates the real-world case (a slot whose
+    # date has simply elapsed since it was generated).
+    db_slot = (await test_session.execute(select(ScheduleSlot).where(ScheduleSlot.id == slot_id))).scalar_one()
+    db_slot.starts_at = datetime.now(timezone.utc) - timedelta(days=1)
+    db_slot.ends_at = db_slot.starts_at + timedelta(minutes=30)
+    await test_session.commit()
+
+    upcoming = (await test_client.get(
+        f"/schedule/slots/?doctor_id={doctor['id']}&is_booked=false&upcoming_only=true", headers=auth_headers
+    )).json()
+    assert slot_id not in {s["id"] for s in upcoming["items"]}
+
+    without_filter = (await test_client.get(
+        f"/schedule/slots/?doctor_id={doctor['id']}&is_booked=false", headers=auth_headers
+    )).json()
+    assert slot_id in {s["id"] for s in without_filter["items"]}
+
+    rejected = await test_client.post(
+        f"/schedule/slots/{slot_id}/book", json={"patient_id": patient["id"]}, headers=auth_headers
+    )
+    assert rejected.status_code == 409
 
 
 async def test_bare_patient_role_cannot_create_availability_or_generate_slots_but_can_book(

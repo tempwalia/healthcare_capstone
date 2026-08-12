@@ -17,6 +17,7 @@ class AppointmentBase(BaseModel):
     location: Optional[str] = None
     reminder_sent: Optional[bool] = False
     follow_up_required: Optional[bool] = False
+    referral_id: Optional[int] = None
 
 
 class AppointmentCreate(AppointmentBase):

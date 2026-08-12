@@ -65,21 +65,36 @@ class SpecialistNote(Base):
 
 
 class ReferralOutcome(Base):
-    """The consult outcome recorded once a referral's appointment has
-    actually happened — symptoms/diagnosis/prescription/follow-up notes.
+    """The consult outcome recorded once a referral's appointment — or, as
+    of the "doctor can complete any booked appointment" pass, ANY
+    appointment, referral-linked or not — has actually happened:
+    symptoms/diagnosis/prescription/follow-up notes.
 
-    Recorded by care coordination staff (see app/core/seed.py), not the
-    specialist directly: the AI-recommended specialist's doctor_id comes from
-    the mock provider directory's synthetic ID space, not a real platform
-    user, so a coordinator relaying the consult report is the realistic
-    actor. `interaction_summary` starts null and is filled in asynchronously
-    by app/services/referral_outcome.py::generate_completion_summary once
+    Exactly one of `referral_request_id`/`appointment_id` is set (enforced
+    in the route layer, not a DB constraint — SQLite's test backend doesn't
+    reliably enforce CHECK constraints the same way Postgres does, so this
+    follows the same app-level-validation convention as the rest of this
+    codebase's cross-field invariants). The referral path predates the
+    appointment path and is unchanged; the appointment path exists because a
+    direct-booked appointment (no referral involved at all) previously had
+    *no* mechanism for a doctor to record what happened and close it out —
+    see app/api/routes/appointments.py's outcome routes.
+
+    Permission to record one is still staff-only — specialist/pcp (for
+    appointments)/care_coordinator/doctor hold `referral:record_outcome`
+    (see app/core/seed.py) — same rationale as before: whoever is actually
+    seeing the patient should be the one recording it, and view_own-scoped
+    roles are further restricted to appointments/referrals they're actually
+    party to (see _get_scoped_referral / _get_scoped_appointment).
+    `interaction_summary` starts null and is filled in asynchronously by
+    app/services/referral_outcome.py::generate_completion_summary once
     recorded — a whole-care-journey summary for the next follow-up."""
 
     __tablename__ = "referral_outcomes"
 
     id = Column(Integer, primary_key=True, index=True)
-    referral_request_id = Column(Integer, ForeignKey("referral_requests.id"), nullable=False, unique=True)
+    referral_request_id = Column(Integer, ForeignKey("referral_requests.id"), nullable=True, unique=True)
+    appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True, unique=True)
     recorded_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     symptoms = Column(Text, nullable=True)
     diagnosis = Column(Text, nullable=True)

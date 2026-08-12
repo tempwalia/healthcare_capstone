@@ -3,9 +3,11 @@ from app.agents.audit import call_tool_audited
 from app.agents.state import ReferralState
 from app.database import session as db_session
 from app.events.outbox import write_outbox_event
+from app.models.doctor import Doctor
 from app.models.patient import Patient
 from app.models.referral import ReferralRequest, ReferralWorkflowStatus
 from app.services.audit import log_action
+from app.services.notifications import create_notification
 
 
 async def eligibility_node(state: ReferralState) -> dict:
@@ -32,6 +34,25 @@ async def eligibility_node(state: ReferralState) -> dict:
             {"referral_id": referral.id, **result},
             referral_id=referral.id,
         )
+
+        if not result["verified"]:
+            referring_doctor = await db.get(Doctor, referral.referring_doctor_id)
+            if referring_doctor is not None and referring_doctor.user_id is not None:
+                await create_notification(
+                    db, user_id=referring_doctor.user_id, title="Referral eligibility check failed",
+                    body=f"Insurance eligibility could not be verified for referral #{referral.id}.",
+                    referral_id=referral.id,
+                )
+            else:
+                # Same best-effort-skip-with-audit-log convention as
+                # notify_node's patient-side case (record_referral_outcome's
+                # equivalent skip in referral.py stays silent for now).
+                await log_action(
+                    db, actor_id=None, action="referral.notification.skipped",
+                    resource_type="referral_request", resource_id=referral.id,
+                    details={"reason": "referring doctor has no linked user account", "event": "eligibility_denied"},
+                )
+
         await db.commit()
         return {"eligibility": result, "status": referral.status}
 

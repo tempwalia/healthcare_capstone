@@ -2,7 +2,7 @@
 and the resulting whole-care-journey completion summary."""
 from httpx import AsyncClient
 
-from tests.test_referral import _grant_role
+from tests.test_referral import _grant_role, _link_doctor_to_user
 from tests.test_referral_workflow_agents import _submit_referral
 
 
@@ -211,6 +211,70 @@ async def test_outcome_visibility_matches_referral_visibility(
         f"/referral/requests/{created['id']}/outcome", headers=bystander_headers
     )
     assert cannot_see_outcome.status_code == 404
+
+
+async def test_specialist_can_only_record_outcome_for_their_own_assigned_referral(
+    test_client: AsyncClient, test_session, test_user_data, auth_headers, test_doctor_data,
+):
+    """specialist gained referral:record_outcome this session (a real
+    platform doctor can now be mapped onto a referral via
+    resume_workflow's platform_doctor_id). Verify record_referral_outcome
+    uses _get_scoped_referral, not a blanket permission check: a specialist
+    who isn't the assigned one gets the same 404 a bystander would, and the
+    actually-assigned specialist can complete it."""
+    created = await _submit_referral(
+        test_client, test_session, test_user_data, auth_headers, test_doctor_data,
+        insurance_policy_number="ACME-991123",
+        reason="Persistent lower back pain, suspected herniated disc",
+    )
+    state = (await test_client.get(f"/referral-workflow/{created['id']}/state", headers=auth_headers)).json()
+    candidate_id = state["specialist_candidates"][0]["doctor_id"]
+
+    real_specialist_data = {**test_doctor_data, "email": "real.specialist@example.com", "license_number": "MD999999"}
+    real_doctor = (await test_client.post("/doctors/", json=real_specialist_data, headers=auth_headers)).json()
+
+    await test_client.post(
+        "/auth/register",
+        json={"email": "assigned.spec@example.com", "username": "assigned_spec", "password": "testpassword123"},
+    )
+    await _grant_role(test_session, "assigned_spec", "specialist")
+    await _link_doctor_to_user(test_session, real_doctor["id"], "assigned_spec")
+    assigned_login = await test_client.post(
+        "/auth/login", data={"username": "assigned_spec", "password": "testpassword123"}
+    )
+    assigned_headers = {"Authorization": f"Bearer {assigned_login.json()['access_token']}"}
+
+    await _grant_role(test_session, test_user_data["username"], "care_coordinator")
+    resumed = await test_client.post(
+        f"/referral-workflow/{created['id']}/resume",
+        json={"doctor_id": candidate_id, "platform_doctor_id": real_doctor["id"]}, headers=auth_headers,
+    )
+    assert resumed.status_code == 200
+
+    await test_client.post(
+        "/auth/register",
+        json={"email": "bystander.spec@example.com", "username": "bystander_spec", "password": "testpassword123"},
+    )
+    await _grant_role(test_session, "bystander_spec", "specialist")
+    bystander_login = await test_client.post(
+        "/auth/login", data={"username": "bystander_spec", "password": "testpassword123"}
+    )
+    bystander_headers = {"Authorization": f"Bearer {bystander_login.json()['access_token']}"}
+
+    blocked = await test_client.post(
+        f"/referral/requests/{created['id']}/outcome", headers=bystander_headers,
+        json={"symptoms": "back pain", "diagnosis": "should not be allowed", "prescription": "n/a"},
+    )
+    assert blocked.status_code == 404
+
+    allowed = await test_client.post(
+        f"/referral/requests/{created['id']}/outcome", headers=assigned_headers,
+        json={"symptoms": "Lower back pain", "diagnosis": "Lumbar disc herniation", "prescription": "Naproxen"},
+    )
+    assert allowed.status_code == 202
+
+    final = (await test_client.get(f"/referral/requests/{created['id']}", headers=auth_headers)).json()
+    assert final["status"] == "completed"
 
 
 async def test_patient_context_surfaces_referral_documents(

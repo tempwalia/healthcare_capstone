@@ -6,6 +6,7 @@ from app.models.medical_record import MedicalRecord
 from app.models.notification import Notification
 from app.models.outbox import OutboxEvent
 from app.models.patient import Patient
+from app.models.provider_directory_link import ProviderDirectoryLink
 from app.models.referral import ReferralDocument, ReferralRequest, SpecialistNote
 from app.models.refresh_token import RefreshToken
 from app.models.role import Permission, Role, RolePermission, UserRole
@@ -33,4 +34,5 @@ __all__ = [
     "AuditLog",
     "OutboxEvent",
     "Notification",
+    "ProviderDirectoryLink",
 ]
