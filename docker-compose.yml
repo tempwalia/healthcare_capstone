@@ -14,7 +14,14 @@ services:
       retries: 10
 
   api:
-    build: .
+    # Temporarily pinned to the already-built local image instead of `build: .`
+    # — buildx's docker-container builder is currently stuck pulling
+    # moby/buildkit:buildx-stable-1 (Docker Desktop network/VM issue, not a
+    # problem with this Dockerfile). This lets `docker compose up` start
+    # without touching buildx at all. To rebuild after a code change, or once
+    # Docker Desktop's builder is working again, restore `build: .` here (or
+    # run `docker compose build api` directly) and remove this `image:` line.
+    image: healthcare_capstone-api:latest
     env_file: .env
     environment:
       # Overrides whatever DATABASE_URL is in .env (typically a host-machine

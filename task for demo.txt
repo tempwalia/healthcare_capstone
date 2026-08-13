@@ -1,0 +1,264 @@
+Section 1–4 · Days 1–15 8 done · 5 partial · 3 missing
+Mapped topic-by-topic against the LangGraph workflow (app/agents/), the MCP
+layer (mock_systems/, fastapi_mcp mounts), and the security/enterpriseintegration code.
+SECTION 1 — AGENTIC AI ENGINEERING FOUNDATION
+✓ LangGraph fundamentals — nodes, edges, state, graph flow DONE
+The referral workflow is a real StateGraph: intake → eligibility → specialist → scheduling → notify, each a
+distinct node over a typed shared state.
+app/agents/graph.py · state.py ·
+nodes/{intake,eligibility,specialist,scheduling,notify,summarizer}.py
+✓ Agent loops, conditional routing, tool calling, state management DONE
+Conditional edges branch on eligibility outcome and missing-document status; every node calls out to
+MCP tools rather than hardcoded logic.
+graph.py:route_after_eligibility · app/agents/mcp_clients.py
+✓ Orchestration, prompt patterns, human-in-the-loop, multi-agent DONE
+A real LangGraph interrupt() pauses the graph for a coordinator's specialist approval and resumes
+correctly, even after a restart. A second, separate ReAct agent handles conversation — two distinct
+graphs, not one doing both jobs.
+graph.py (await_specialist_approval) · assistant_graph.py
+◐ Agentic design patterns — skills, memory, planning, A2A, lifecycle PARTIAL
+Memory (Postgres/SQLite checkpointer, resumable by thread_id) and skills (per-role, per-node MCP tool
+scoping) are real. Planning is a fixed graph topology, not dynamic re-planning. Agent-to-agent (A2A)
+protocol — agents negotiating directly with each other — was not built; the two graphs don't talk to one
+another.
+app/agents/checkpointer.py · ROLE_TOOL_ALLOWLIST in assistant_graph.py
+✕ RAG (LangChain/LangGraph) + LangSmith tracing & evaluation MISSING
+No vector store or embedding-based retrieval anywhere in the codebase — document summarization
+uses direct-context LLM calls / regex, not retrieval-augmented generation. No LangSmith integration for
+tracing or eval; only langsmith's transitive presence via LangChain, never wired up.
+grep for vector/embedding/langsmith across app/ — no hits
+SECTION 2 — GITHUB COPILOT FOR AI-ASSISTED SDLC
+✓ AI-assisted codebase analysis & feature development DONE — VIA CLAUDE CODE, NOT COPILOT
+The practice was applied throughout — README.md and CAPSTONE_IMPLEMENTATION_GUIDE.md are
+both AI-assisted repo-understanding artifacts — but the tool was Claude Code, not GitHub Copilot itself.
+README.md · CAPSTONE_IMPLEMENTATION_GUIDE.md
+✓ Refactoring, testing, debugging, RCA, code review DONE
+120 test functions across 23 files; multiple real root-cause-analysis sagas on record (a fastapi_mcp
+schema-generation bug, a stale-port debugging chase) with fixes and regression tests, not just patches.
+tests/ (23 files) · IDOR regression suite in test_record_scope.py
+✕ GitHub workflows — PR automation, CI/CD, GitHub Actions MISSING
+No .github/workflows directory exists. Tests and Docker builds are run manually, not gated by CI on
+push/PR.
+confirmed: no .github directory in repo
+SECTION 3 — MCP-BASED AGENT ENGINEERING & INTEGRATION
+✓ MCP fundamentals & dev setup (Python SDK, FastMCP) DONE
+The core API and all five mocked external systems (EHR payer provider directory scheduling
+The core API and all five mocked external systems (EHR, payer, provider directory, scheduling,
+notifications) each run as an independent fastapi_mcp server.
+mock_systems/{ehr,payer,provider_directory,scheduling,notification}_mock
+✓ MCP tool development — schema, parameters, dynamic tools DONE
+Tool schemas are generated from FastAPI/Pydantic route signatures; tool exposure is dynamic per role
+via an allowlist. One real library bug in this exact machinery (a spurious injected schema type on
+Optional[List] params) was found and worked around, evidence of real engagement with how MCP
+tool schemas actually get built.
+app/agents/assistant_graph.py — ROLE_TOOL_ALLOWLIST
+✕ MCP resources + prompt templates (structured output) MISSING
+Every MCP server here exposes tools (via fastapi_mcp's route-to-tool conversion). None expose MCP
+resources or prompt templates as distinct primitives — no @mcp.resource / @mcp.prompt usage
+anywhere.
+grep for @mcp.resource / @mcp.prompt — no hits
+✓ MCP client + tool invocation — discovery, retry, failure handling DONE
+MultiServerMCPClient per scoped node, tenacity retry/backoff on every agent/tool call, and a
+documented graceful-degradation path when an LLM or tool call fails.
+app/agents/mcp_clients.py · pyproject.toml (tenacity, langchain-mcp-adapters)
+SECTION 4 — GOVERNANCE, ENTERPRISE INTEGRATION & FDE QUALIFICATION
+◐ MCP communication — HTTP, SSE, WebSocket PARTIAL
+HTTP + Server-Sent Events are real and load-bearing (referral status streaming). WebSocket transport
+was not built anywhere in the app.
+GET /referral/requests/{id}/events (SSE) · no websocket usage found
+◐ Security & testing — OAuth, JWT, logging, tracing, validation PARTIAL
+JWT access + rotating refresh tokens with reuse detection, structured JSON logs with correlation IDs, and
+Pydantic validation everywhere are all real. "OAuth" here is FastAPI's OAuth2PasswordBearer scheme for
+extracting the bearer token — not a third-party OAuth2/OIDC federation flow. Tracing is correlation-ID
+based, not a distributed tracer (OpenTelemetry/Jaeger).
+app/auth/jwt_handler.py · app/core/logging.py · app/middlewares/correlation.py
+◐ Enterprise integration — DB, APIs, GitHub tools, Azure OpenAI / GCP Vertex AI PARTIAL
+Postgres + SQLAlchemy + Alembic and a full REST/MCP API surface are solid. No GitHub-integration
+tools (repo/PR automation as agent tools). The LLM provider is swappable by design (ADR-005) but only
+Anthropic Claude / OpenAI / Groq were actually wired — Azure OpenAI and GCP Vertex AI were never
+added.
+app/agents/llm.py:get_chat_model() · alembic/
+◐ Capstone — Copilot + MCP + Multi-Agent + Cloud Deployment + Demo PARTIAL
+This project is that capstone. MCP and multi-agent orchestration are fully real. "Cloud deployment" is a
+portable Docker Compose stack, not a deployment to an actual cloud provider. The demo dashboard
+exists and the API underneath it is verified, but it has never been visually confirmed open in an actual
+browser.
+docker-compose.yml · static/ (served at /app)
+Foundation Modules 1–4 10 done · 9 partial · 1 missing
+The architecture/governance curriculum, checked against
+CAPSTONE_IMPLEMENTATION_GUIDE.md §3 (the written architecture deliverable)
+and the code that implements it.
+MODULE 1 — REQUIREMENTS ANALYSIS & PROBLEM FRAMING
+✓ Problem identification & decomposition DONE
+Full deliverables-traceability matrix maps every problem-statement ask to a build phase.
+CAPSTONE_IMPLEMENTATION_GUIDE.md §1
+✓ Stakeholder mapping & value streams DONE
+Six real roles (patient, PCP, specialist, care coordinator, payer admin, admin) with distinct permissions and
+journeys, written up end to end.
+WORKFLOW.md
+◐ Outcomes, KPIs & success criteria PARTIAL
+Operational KPIs exist (avg time-to-schedule, delay-risk count, denial rate) but there's no standalone
+success-criteria document beyond the phase traceability matrix.
+app/api/routes/analytics.py
+✓ Functional decomposition — epics → features → capabilities DONE
+13 build phases, each independently testable, each traced to a specific problem-statement ask or AI
+opportunity.
+CAPSTONE_IMPLEMENTATION_GUIDE.md §5, Phases 0–13
+✓ Non-functional requirements engineering DONE
+12 NFRs with explicit target/approach, including latency, security, privacy, auditability, explainability,
+human oversight, and resilience.
+CAPSTONE_IMPLEMENTATION_GUIDE.md §3.2
+MODULE 2 — ARCHITECTURE PRINCIPLES & DESIGN
+✓ Modern architecture patterns — API-first, microservices, event-driven DONE
+A deliberate, argued ADR: implement as a modular monolith with real bounded-context boundaries,
+design (not build) the microservices target state — not an accident, a documented trade-off.
+ADR-001, ADR-002 (§3.3)
+◐ Cloud-native design — 12-factor, stateless/stateful, resilience, observability PARTIAL
+Config-via-env, a stateless API layer with state externalized to Postgres, and retry/fallback resilience are
+all real. It has never actually run on a cloud platform or Kubernetes — only local Docker Compose.
+ADR-004 · Dockerfile
+◐ Integration & interoperability — gateway/mesh, IAM, Zero Trust PARTIAL
+MCP as the agent-to-system integration layer is real and consistently applied. No API gateway or service
+mesh; IAM is RBAC (real), not a Zero Trust architecture.
+ADR-003
+✓ Reference architecture & templates DONE
+A reusable phase-by-phase build guide plus an as-built README, kept in sync with the actual code rather
+than left as an aspirational spec.
+CAPSTONE_IMPLEMENTATION_GUIDE.md · README.md
+✓ Hands-on: HLD, component interactions, NFR-driven decisions DONE
+A full HLD with a domain-decomposition table (bounded context → stateful/stateless → owned data →
+dependencies) and two Mermaid diagrams.
+§3.5 High-Level Design
+MODULE 3 — AI CAPABILITIES & ARCHITECTURE SOLUTIONING
+✓ AI-driven requirements engineering & gap analysis DONE — VIA PROCESS
+Applied as a working method throughout the build, not just as a training exercise: an explicit 11-item
+"de-silo" gap-analysis pass was run against the shipped platform and closed in one session.
+project history — the "de-silo" workstream pass
+◐ Multi-agent architecture, RAG-based integration, governed AI design PARTIAL
+Multi-node orchestration and governance (audit logging, scoped tool access, human approval gates) are
+real and thorough. RAG-based integration specifically was not built — see the Section 1 gap.
+ADR-006 · app/services/record_scope.py
+✓ Hands-on case study — extract capabilities, map to architecture DONE — VIA PROCESS
+This is literally what §1 of the implementation guide does with the problem statement: every ask mapped
+to a section or phase.
+CAPSTONE_IMPLEMENTATION_GUIDE.md §1
+MODULE 4 — DECISION MAKING, GOVERNANCE & COMPLIANCE
+✓ Architecture Decision Records DONE
+Six ADRs, each with context, decision, and an explicit trade-off — including the two the problem
+statement names by name (orchestration vs. choreography, stateful vs. stateless).
+§3.3, ADR-001 through ADR-006
+◐ Trade-off analysis — cost/performance/risk, CAP theorem, FinOps PARTIAL
+Real trade-off reasoning is present in every ADR. CAP-theorem framing and FinOps-aligned cost analysis
+specifically are not named or applied anywhere.
+grep for "CAP theorem" / "FinOps" — no hits
+◐ Governance & policy frameworks — policy-as-code, design gates PARTIAL
+RBAC is enforced in code as real governance, but as application logic, not a separate policy-as-code
+engine (e.g. OPA); no automated design-review gate in the dev process.
+app/core/seed.py — ROLE_PERMISSIONS
+◐ Identity & Access Management — RBAC/ABAC, Zero Trust, federation PARTIAL
+RBAC is genuinely thorough — role/permission tables plus row-level ownership scoping, not just route
+gates, with a dedicated IDOR regression suite. ABAC, Zero Trust, and identity federation were not
+attempted.
+tests/test_record_scope.py
+◐ Regulatory & compliance awareness — PHI/PII, audit, encryption PARTIAL
+Consent gating, PHI-pattern redaction before logging, full audit trail, and soft deletes are real. There's no
+explicit HIPAA/GDPR compliance mapping document, and no encryption-at-rest beyond bcrypt password
+hashing.
+§10.2 Security Architecture summary
+✕ DevOps & CI/CD alignment — quality gates, DevSecOps MISSING
+Same gap as the Section 2 curriculum item — no CI pipeline, so there's no automated quality gate on
+any commit.
+no .github/workflows
+◐ AI-assisted decisioning & governance PARTIAL
+A delay-risk heuristic surfaces in analytics for human review. No automated compliance-check engine or
+AI-driven cost/performance optimization loop.
+analytics py — delay risk referrals
+analytics.py delay_risk_referrals
+Problem-statement deliverables 18/18 written · verified in code
+The capstone brief's own two deliverable categories — this is the part with the
+strongest, most literal evidence trail, since the implementation guide carries its
+own traceability matrix section-by-section.
+1. ARCHITECTURE & DESIGNING
+✓ Business capability map DONE
+§3.1
+✓ Key non-functional requirements DONE
+§3.2
+✓ ADRs incl. REST vs. events, orchestration vs. choreography, stateful vs. stateless DONE
+§3.3, six ADRs
+✓ Healthcare context diagram (payers, providers, EHR, labs, pharmacy) DONE
+§3.4, Mermaid diagram
+✓ HLD + domain decomposition into microservices + stateful/stateless DONE
+§3.5
+✓ API specs w/ samples — Referral, Eligibility, Provider search & schedule, Notification &
+Docs DONE
+§3.6
+✓ Sequence diagram for the referral workflow DONE
+§3.7
+✓ Event catalogue & event flow DONE
+§3.8
+✓ Optional — Deployment view (Kubernetes) DONE, SKETCH-LEVEL
+§10.1 — target-state design, not built/run
+✓ Optional — Security architecture DONE
+§10.2
+✓ Optional — AI Copilot & agent integration design DONE
+Treated as core, not optional — it's most of what Phases 6–9 build.
+2. IMPLEMENTATION (CODING & TESTING)
+✓ End-to-end AI referral management solution DONE
+✓ Multi-agent workflow (LangChain/LangGraph + MCP) DONE
+✓ Document processing & reasoning DONE
+Real extraction (PDF/text), not a stub — regex + LLM-assisted code/type inference with a deterministic
+fallback.
+✓ Conversational AI assistant DONE
+Role-specific tool allowlists and system prompts, real scoped data access, verified to refuse cross-patient
+lookups.
+✓ Testing evidence — functional, unit, integration DONE
+120 async tests, 23 files, run against SQLite and real Postgres
+✓ Core workflow — submission → eligibility → recommendation → scheduling →
+notification DONE
+✓ Any 4 of the 7 AI Opportunities DONE — 5 AT FULL STRENGTH
+Exceeds the requirement; see the dedicated breakdown below.
+3. DEPLOYMENT
+✓ Dockerized deployment — source, Dockerfile, README, run instructions DONE
+docker-compose.yml, Dockerfile, scripts/start.sh
+✓ Evaluated via container execution, all inline functionality DONE
+Verified with a full teardown/rebuild-from-clean smoke test, not just "it started."
+EVALUATION FOCUS AREAS (THE BRIEF'S OWN REVIEW CRITERIA)
+✓ End-to-end referral workflow orchestration DONE
+✓ Integration with provider, payer & scheduling systems DONE — MOCKED, CONTRACTS DOCUMENTED
+✓ Real-time status tracking & stakeholder visibility DONE
+SSE stream + notification inbox + role-based dashboard.
+✓ Analytics & operational insights for care coordination DONE
+GET /analytics/referrals/summary
+AI Opportunities — the full list of 7 5 done · 1 partial · 1 missing
+The problem statement only requires any four. Five are fully built at production
+quality; the remaining two are the honest gap.
+✓ Extract diagnosis & procedure codes from uploaded documents DONE
+✓ Recommend specialists by diagnosis, location & insurance network DONE
+✓ Summarize referral history for specialists before consultation DONE
+✓ Identify missing documents before referral submission DONE
+◐ Predict referral delays and recommend escalation PARTIAL
+A delay-risk count surfaces in analytics for coordinators to review, but nothing automatically recommends
+an escalation action — the "predict" half exists, the "recommend" half doesn't.
+✓ Answer patient queries through a conversational assistant DONE
+✕ Suggest alternative providers if appointments exceed target wait times MISSING
+Not built. No logic anywhere compares an offered slot against target_wait_days and proposes an
+alternative.
+What's actually missing
+If you're deciding where to spend remaining time, this is the honest short list —
+everything else in the curriculum has real, working code behind it.
+Highest-value gaps to close
+1. RAG + LangSmith — the one curriculum pillar with zero footprint in the codebase. Even a small
+retrieval step (e.g. embedding past referral summaries for the assistant to draw on) plus wiring
+LANGCHAIN_TRACING_V2 would close this cleanly.
+2. MCP resources & prompt templates — tools are fully built; resources/prompt-templates as
+distinct MCP primitives never were. Likely the fastest gap to close given the MCP servers already
+exist.
+3. CI/CD pipeline — no .github/workflows . A single workflow running uv run pytest and a
+Docker build on push would satisfy Day 8 and the Module 4 DevOps item at once.
+4. Visually verify the dashboard in a real browser — flagged repeatedly across past sessions and
+never done. Low effort, closes the "Demo" half of Day 15 for real.
+5. Two remaining AI Opportunities — "recommend escalation" and "suggest alternative
+providers" are both incremental additions on top of the existing analytics/scheduling code, not
+new subsystems.
+Compiled by reading the current repository state directly (routes, agents, tests, docs) — not from the build plan.
+Curriculum source: learning curriculam. Problem statement source: problem_statemnet.txt.
