@@ -1,4 +1,4 @@
-# Intelligent Care Coordination & Referral Management Platform
+# Intelligent Care Coordination & Referral Management Platform for FDE Sessions
 
 An end-to-end, AI-agentic referral management platform built for the capstone
 problem statement : patients referred by primary care providers to
